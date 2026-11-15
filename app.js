@@ -58,7 +58,7 @@ function parseDateWord(w) {
 }
 
 // ------------------------------------------------------------------ data, storage & sync
-const APP_VERSION = '2.1.0', DATA_VERSION = 2;
+const APP_VERSION = '2.1.1', DATA_VERSION = 2;
 const COLLS = ['wishlist', 'people', 'tasks', 'paychecks', 'transactions', 'savingsMoves', 'recurring', 'goals', 'workouts', 'body'];
 let D = null, saveTimer = null, SNAP = {}, SYNC = null, NOTIFIED = {};
 const UI = {view: 'today', moneyTab: 'overview', gymTab: 'overview', recTab: 'people', calMonth: TODAY.slice(0, 7), calSel: TODAY, gymEx: null, txFilter: 'period', search: '', importPreview: null, sync: {state: 'off', msg: ''}};
@@ -243,7 +243,9 @@ const catBucket = name => (D.settings.categories.find(c => c.name === name) || {
 function currentPeriod(at = TODAY) {
   const pcs = D.paychecks.filter(p => p.date <= at).sort((a, b) => a.date < b.date ? -1 : 1);
   const pc = pcs[pcs.length - 1];
-  if (!pc) return null;
+  return pc ? periodOf(pc, at) : null;
+}
+function periodOf(pc, at = TODAY) {
   const next = D.paychecks.filter(p => p.date > pc.date).sort((a, b) => a.date < b.date ? -1 : 1)[0];
   const nextPay = next ? next.date : estNextPayday(pc.date);
   const end = addDays(nextPay, -1);
@@ -252,6 +254,10 @@ function currentPeriod(at = TODAY) {
   const moved = pc.leftoverMoved || 0, mw = Math.min(moved, raw.wants);
   const b = {needs: raw.needs - (moved - mw), wants: raw.wants - mw, savings: raw.savings};
   return {pc, start: pc.date, end, nextPay, estimated: !next, budget: b, raw, over: at > end};
+}
+// Ended pay periods whose leftover you haven't reviewed yet. Nothing is ever moved automatically.
+function periodsToReview() {
+  return D.paychecks.filter(pc => !pc.closed).map(pc => periodOf(pc)).filter(p => p.end < TODAY).sort((a, b) => a.start < b.start ? 1 : -1);
 }
 const salaryTx = (from, to, bucket) => D.transactions.filter(t => t.source !== 'savings' && t.date >= from && t.date <= to && (!bucket || t.bucket === bucket));
 function periodStats(p) {
@@ -322,40 +328,48 @@ const wVol = w => sum(w.exercises, e => sum(e.sets, s => (s.w || 0) * (s.r || 0)
 const wSets = w => sum(w.exercises, e => e.sets.length);
 const workoutsSorted = () => [...D.workouts].sort((a, b) => a.date < b.date ? -1 : 1);
 
+// Reads Hevy's text export (and similar formats: other languages, kg/lbs, "40kg × 12", "Сет 1: …").
+const MONTHS = {jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12, 'яну': 1, 'фев': 2, 'мар': 3, 'апр': 4, 'май': 5, 'юни': 6, 'юли': 7, 'авг': 8, 'сеп': 9, 'окт': 10, 'ное': 11, 'дек': 12};
+function parseDateLine(l) {
+  let y, m, d, x;
+  if ((x = l.match(/([A-Za-zА-Яа-я]{3})[A-Za-zА-Яа-я]*\.?\s+(\d{1,2}),?\s+(\d{4})/)) && MONTHS[x[1].toLowerCase()]) [m, d, y] = [MONTHS[x[1].toLowerCase()], +x[2], +x[3]];
+  else if ((x = l.match(/(\d{1,2})\.?\s+([A-Za-zА-Яа-я]{3})[A-Za-zА-Яа-я]*\.?,?\s+(\d{4})/)) && MONTHS[x[2].toLowerCase()]) [d, m, y] = [+x[1], MONTHS[x[2].toLowerCase()], +x[3]];
+  else if ((x = l.match(/(\d{4})-(\d{1,2})-(\d{1,2})/))) [y, m, d] = [+x[1], +x[2], +x[3]];
+  else if ((x = l.match(/\b(\d{1,2})[./](\d{1,2})[./](\d{4})\b/))) [d, m, y] = [+x[1], +x[2], +x[3]];
+  else return null;
+  let h = 12, mi = 0; const t = l.match(/(\d{1,2}):(\d{2})\s*([ap])?\.?\s*m?\.?/i);
+  if (t) { h = +t[1]; mi = +t[2]; if (t[3]) { if (/p/i.test(t[3]) && h < 12) h += 12; if (/a/i.test(t[3]) && h === 12) h = 0; } }
+  return `${y}-${pad(m)}-${pad(d)}T${pad(h)}:${pad(mi)}`;
+}
+const SET_WR = /([\d]+(?:[.,]\d+)?)\s*(kg|кг|lbs?)\s*[x×х*]\s*(\d+)/i;
+const SET_REPS = /^(?:[^:]{0,20}:\s*)?(\d+)\s*(reps?|повт)/i;
+const SET_OTHER = /^(set|сет|серия|w|warm.?up|d|drop|f|failure)\s*\d*\s*:|^\d+\s*[:.)]\s/i; // timed/distance sets → ignored
 function parseHevy(text) {
-  const out = [], DATE_RE = /([A-Za-z]{3})[a-z]*\s+(\d{1,2}),\s*(\d{4})(?:\s+at\s+(\d{1,2}):(\d{2})\s*(am|pm)?)?/i;
-  const all = text.replace(/\r/g, '').split('\n').map(l => l.trim()).filter(Boolean);
-  const starts = all.map((l, i) => i + 1 < all.length && DATE_RE.test(all[i + 1]) && !/^set\s*\d/i.test(l) ? i : -1).filter(i => i >= 0);
+  const out = [];
+  const all = text.replace(/\r/g, '').replace(/[  ]/g, ' ').split('\n').map(l => l.trim()).filter(Boolean);
+  const isLink = l => /^https?:\/\//i.test(l) || /^@hevy/i.test(l);
+  const starts = all.map((l, i) => i + 1 < all.length && parseDateLine(all[i + 1]) && !SET_WR.test(l) && !isLink(l) ? i : -1).filter(i => i >= 0);
   if (!starts.length && all.length) starts.push(0);
-  const chunks = starts.map((s, k) => all.slice(s, starts[k + 1] ?? all.length));
+  const chunks = starts.map((st, k) => all.slice(st, starts[k + 1] ?? all.length));
   for (const chunk of chunks) {
-    const link = (chunk.join('\n').match(/https?:\/\/(www\.)?hevy\.com\/workout\/\S+/i) || [])[0] || null;
-    const lines = chunk.filter(l => !/^https?:\/\//.test(l) && !/^@hevyapp$/i.test(l));
-    if (lines.length < 3) continue;
-    let i = 0, title = lines[0], date = null;
-    const dm = (lines[1] || '').match(DATE_RE);
-    if (dm) {
-      let h = +(dm[4] || 12); if (dm[6]) { if (/pm/i.test(dm[6]) && h < 12) h += 12; if (/am/i.test(dm[6]) && h === 12) h = 0; }
-      date = `${dm[3]}-${pad(MON.findIndex(x => x.toLowerCase() === dm[1].toLowerCase()) + 1)}-${pad(dm[2])}T${pad(h)}:${dm[5] || '00'}`;
-      i = 2;
-    } else i = 1;
+    const link = (chunk.join('\n').match(/https?:\/\/(www\.)?hevy\.com\/workout\/[A-Za-z0-9]+/i) || [])[0] || null;
+    const lines = chunk.filter(l => !isLink(l));
+    let title = 'Workout', date = null, i = 0;
+    if (lines[0] && !SET_WR.test(lines[0]) && !parseDateLine(lines[0])) { title = lines[0]; i = 1; }
+    if (lines[i] && parseDateLine(lines[i]) && !SET_WR.test(lines[i])) { date = parseDateLine(lines[i]); i++; }
     const exercises = []; let cur = null;
     for (; i < lines.length; i++) {
-      const l = lines[i];
-      const sm = l.match(/^(?:set\s*\d+|w|warm.?up|d|drop|f|failure)[^:]*:\s*(.*)$/i);
-      if (sm && cur) {
-        const body = sm[1];
-        const wr = body.match(/([\d.,]+)\s*(kg|lbs?)\s*[x×]\s*(\d+)/i);
-        const ro = body.match(/^(\d+)\s*reps?/i);
+      const l = lines[i], wr = l.match(SET_WR), ro = !wr && l.match(SET_REPS);
+      if (wr || ro) {
+        if (!cur) { cur = {name: 'Exercise', sets: []}; exercises.push(cur); }
         let w = 0, r = 0;
-        if (wr) { w = num(wr[1]); if (/lb/i.test(wr[2])) w = r2(w * 0.4536); r = +wr[3]; }
-        else if (ro) r = +ro[1];
-        else continue; // time / distance sets are skipped
-        cur.sets.push({w, r, warm: /^(w|warm)/i.test(l)});
-      } else if (!sm) { cur = {name: l, sets: []}; exercises.push(cur); }
+        if (wr) { w = num(wr[1]); if (/lb/i.test(wr[2])) w = r2(w * 0.4536); r = +wr[3]; } else r = +ro[1];
+        cur.sets.push({w, r, warm: /^(w\b|w:|warm)/i.test(l)});
+      } else if (SET_OTHER.test(l)) continue;
+      else { cur = {name: l, sets: []}; exercises.push(cur); }
     }
     const ex = exercises.filter(e => e.sets.length);
-    if (ex.length) out.push({id: uid(), title, date: date || TODAY + 'T12:00', exercises: ex, link, source: 'hevy-text'});
+    if (ex.length) out.push({id: uid(), title, date: date || TODAY + 'T12:00', noDate: !date, exercises: ex, link, source: 'hevy-text'});
   }
   return out;
 }
@@ -553,7 +567,9 @@ V.today = () => {
       right: k === 'savings' ? `${eur(p.budget.savings)} saved` : `${eur(st.spent[k])} / ${eur(p.budget[k])}`, tip: k === 'savings' ? 'Moved to savings on payday' : `${k}: ${eur(st.spent[k])} spent, ${eur(p.budget[k] - st.spent[k])} left`})))}</div>` : '';
   const bw = D.body.filter(b => b.weight).map(b => ({x: b.date, y: +b.weight})).filter(p => p.x >= addDays(TODAY, -90));
   const body = `<div class="card"><h3>Weight · 90 days <span class="act"><button class="btn sm" onclick="A.bodyLog()">+ Log</button></span></h3>${bw.length ? lineChart([{points: bw, color: 'var(--accent)'}], {h: 190, W: 440, fmt: v => v.toFixed(1), band: goalBand(), unit: ' kg'}) : '<div class="empty">Log your weight to see the trend</div>'}</div>`;
-  return `<div class="grid g4">${tiles}</div><div class="mt">${briefing}</div><div class="grid g21 mt">${upcoming}<div class="grid">${buckets}${body}</div></div>`;
+  const rv = periodsToReview(), rvP = rv[0];
+  const reviewCard = rvP ? `<div class="card briefing" style="margin-bottom:16px"><div class="row wrap"><div><div class="acc">▸ Pay period ${fd(rvP.start)} – ${fd(rvP.end)} has ended</div><div class="small muted">Check the leftover and decide how much goes to savings${rv.length > 1 ? ` · ${rv.length} periods waiting` : ''}.</div></div><span class="sp"></span><button class="btn pri" onclick="A.review('${rvP.pc.id}')">Review leftover</button></div></div>` : '';
+  return `${reviewCard}<div class="grid g4">${tiles}</div><div class="mt">${briefing}</div><div class="grid g21 mt">${upcoming}<div class="grid">${buckets}${body}</div></div>`;
 };
 
 // ---------------- money
@@ -573,8 +589,8 @@ V.money_overview = () => {
     ${hbars([{label: 'Needs', value: st.spent.needs, max: p.budget.needs, color: PAL.needs, right: `${eur(st.spent.needs)} spent · ${eur(st.needsLeft)} left`},
       {label: 'Needs — bills still due', value: st.committed, max: p.budget.needs, color: 'var(--warn)', right: eur(st.committed)},
       {label: 'Wants', value: st.spent.wants, max: p.budget.wants, color: PAL.wants, right: `${eur(st.spent.wants)} spent · ${eur(st.wantsLeft)} left`}])}
-    <div class="row mt" style="padding-top:12px;border-top:1px solid var(--line)"><div><div class="small muted">Projected leftover → savings</div><div class="big ${st.leftover < 0 ? 'bad' : 'acc'}">${eur(st.leftover)}</div></div><span class="sp"></span>
-      ${p.pc.leftoverMoved ? `<span class="small muted">✓ ${eur(p.pc.leftoverMoved)} moved</span>` : `<button class="btn ${diff(TODAY, p.end) <= 3 ? 'pri' : ''}" onclick="A.moveLeftover()" ${st.leftover <= 0 ? 'disabled' : ''}>Move to savings</button>`}</div></div>`;
+    <div class="row mt" style="padding-top:12px;border-top:1px solid var(--line)"><div><div class="small muted">Expected leftover · you review it when the period ends</div><div class="big ${st.leftover < 0 ? 'bad' : 'acc'}">${eur(st.leftover)}</div></div><span class="sp"></span>
+      ${p.pc.closed ? `<span class="small muted">✓ reviewed · ${eur(p.pc.leftoverMoved || 0)} to savings</span>` : `<button class="btn ${diff(TODAY, p.end) <= 2 ? 'pri' : 'ghost'}" onclick="A.review('${p.pc.id}')">Review leftover${diff(TODAY, p.end) > 2 ? ' early' : ''}</button>`}</div></div>`;
   const cats = {}; for (const t of st.tx) cats[t.category] = (cats[t.category] || 0) + t.amount;
   const catRows = Object.entries(cats).sort((a, b) => b[1] - a[1]).map(([c, v]) => ({label: c, value: v, color: PAL[catBucket(c)], right: eur(v)}));
   const catsCard = `<div class="card"><h3>Spending by category · this period</h3>${catRows.length ? hbars(catRows) : '<div class="empty">No spending yet</div>'}<div class="mt">${legend([[PAL.needs, 'needs'], [PAL.wants, 'wants'], [PAL.savings, 'savings']])}</div></div>`;
@@ -711,13 +727,40 @@ V.gym_history = () => {
     ${w.exercises.map(e => `<div class="li small"><span class="t">${esc(e.name)} <span class="faint">${muscleOf(e.name)}</span></span><span class="muted">${e.sets.map(s => s.w ? `${s.w}×${s.r}` : `${s.r}`).join('  ')}</span></div>`).join('')}
     <div class="row small muted mt"><span>${wSets(w)} sets</span><span>·</span><span>${Math.round(wVol(w)).toLocaleString()} kg volume</span></div></div>`).join('') || '<div class="card"><div class="empty">No workouts yet</div></div>'}</div>`;
 };
-V.gym_import = () => {
+function importPreviewHTML() {
   const pv = UI.importPreview;
-  return `<div class="grid g2"><div class="card"><h3>Paste Hevy export (plain text)</h3>
-    <textarea id="hevyText" rows="14" placeholder="Share → Copy text in Hevy, then paste here. Several workouts at once are fine.">${esc(UI.hevyDraft || '')}</textarea>
-    <div class="row mt"><button class="btn" onclick="A.hevyParse()">Preview</button><label class="btn ghost">Load .txt<input type="file" accept=".txt" hidden onchange="A.hevyFile(this)"></label><span class="sp"></span><button class="btn pri" onclick="A.hevySave()" ${pv && pv.length ? '' : 'disabled'}>Save ${pv ? pv.length : ''} workout${pv && pv.length === 1 ? '' : 's'}</button></div>
-    <div class="small muted mt" style="line-height:1.8"><b class="acc">On Android:</b> in Hevy tap <i>Share → Oracle 2</i> and the workout lands here automatically.<br><b class="acc">Anywhere:</b> in Hevy tap <i>Share → Copy</i>, then paste above. Several workouts at once are fine.</div></div>
-    <div class="card"><h3>Preview</h3>${pv ? (pv.length ? pv.map(w => `<div style="margin-bottom:14px"><div class="acc">${esc(w.title)} <span class="muted small">${fdl(w.date.slice(0, 10))} ${w.date.slice(11)}</span></div>${w.exercises.map(e => `<div class="li small"><span class="t">${esc(e.name)} <span class="faint">→ ${muscleOf(e.name)}</span></span><span class="muted">${e.sets.map(s => `${s.w}×${s.r}`).join('  ')}</span></div>`).join('')}</div>`).join('') : '<div class="empty bad">Couldn\'t find any sets in that text.</div>') : '<div class="empty">Paste a workout and press Preview</div>'}</div></div>`;
+  if (!pv) return '<div class="empty">Paste a workout — the preview appears here straight away.</div>';
+  if (!pv.length) {
+    const first = (UI.hevyDraft || '').split('\n').map(l => l.trim()).filter(Boolean).slice(0, 4);
+    const onlyLink = first.length && first.every(l => /^https?:\/\/|^@hevy/i.test(l) || first.length <= 2);
+    return `<div class="bad">No sets found in this text.</div><div class="small muted mt" style="line-height:1.8">${onlyLink ? 'It looks like only a link or title was copied — the link alone doesn\'t contain your sets. In Hevy open the workout → <b>⋯ / Share</b> → choose the option that copies the <b>workout as text</b>.' : 'Sets need to look like <code>Set 1: 40 kg x 12</code> or <code>40 kg × 12</code>.'}</div>${first.length ? `<div class="small faint mt">First lines I received:<br>${first.map(esc).join('<br>')}</div>` : ''}`;
+  }
+  return pv.map((w, k) => `<div style="margin-bottom:16px"><div class="row wrap"><span class="acc">${esc(w.title)}</span><span class="sp"></span><input type="date" value="${w.date.slice(0, 10)}" onchange="UI.importPreview[${k}].date=this.value+'T'+UI.importPreview[${k}].date.slice(11);UI.importPreview[${k}].noDate=false" style="padding:3px 6px"></div>
+    ${w.noDate ? '<div class="small warn">No date found in the text — check the date above.</div>' : ''}
+    ${w.exercises.map(e => `<div class="li small"><span class="t" style="white-space:normal">${esc(e.name)} <span class="faint">→ ${muscleOf(e.name)}</span></span><span class="muted">${e.sets.map(s => s.w ? `${s.w}×${s.r}` : `${s.r} reps`).join('  ')}</span></div>`).join('')}</div>`).join('');
+}
+function importLive(text) {
+  UI.hevyDraft = text; UI.importPreview = text.trim() ? parseHevy(text) : null;
+  const pv = UI.importPreview, n = pv ? pv.length : 0;
+  $('#impPv').innerHTML = importPreviewHTML();
+  const b = $('#impSave'); b.disabled = !n; b.textContent = n ? `Save ${n} workout${n === 1 ? '' : 's'}` : 'Save';
+  $('#impStatus').innerHTML = impStatus();
+}
+function impStatus() {
+  const pv = UI.importPreview; if (!pv) return '';
+  if (!pv.length) return '<span class="bad">✗ No sets found — see the preview for why</span>';
+  const ex = sum(pv, w => w.exercises.length), sets = sum(pv, w => sum(w.exercises, e => e.sets.length));
+  return `<span class="good">✓ Found ${pv.length} workout${pv.length > 1 ? 's' : ''} · ${ex} exercises · ${sets} sets</span>${pv.some(w => w.noDate) ? ' <span class="warn">· check the date</span>' : ''}`;
+}
+V.gym_import = () => {
+  const n = (UI.importPreview || []).length;
+  return `<div class="grid g2"><div class="card"><h3>Import from Hevy</h3>
+    <div class="row wrap" style="margin-bottom:10px"><button class="btn pri" onclick="A.hevyPaste()">Paste from clipboard</button><label class="btn ghost">Load .txt<input type="file" accept=".txt,text/plain" hidden onchange="A.hevyFile(this)"></label></div>
+    <textarea id="hevyText" rows="6" placeholder="…or paste / type the workout text here" oninput="clearTimeout(window._imp);window._imp=setTimeout(()=>importLive(this.value),200)">${esc(UI.hevyDraft || '')}</textarea>
+    <div class="row mt"><button class="btn ghost" onclick="UI.hevyDraft='';UI.importPreview=null;render()">Clear</button><span class="sp"></span><button class="btn pri" id="impSave" onclick="A.hevySave()" ${n ? '' : 'disabled'}>${n ? `Save ${n} workout${n === 1 ? '' : 's'}` : 'Save'}</button></div>
+    <div id="impStatus" class="small mt">${impStatus()}</div>
+    <div class="small muted mt" style="line-height:1.8"><b class="acc">How:</b> in Hevy open the workout → <b>Share</b> → copy the workout <b>as text</b> → come back here → <b>Paste from clipboard</b> → <b>Save</b>. Several workouts at once are fine; importing the same workout again just updates it.</div></div>
+    <div class="card"><h3>Preview</h3><div id="impPv">${importPreviewHTML()}</div></div></div>`;
 };
 
 // ---------------- records
@@ -813,11 +856,11 @@ const HELP = [
   ['Money: budget & safe to spend', `<p>Each paycheck is split by your percentages. <b>Savings</b> is moved to your savings balance straight away. <b>Needs</b> covers bills, subscriptions, food and other essentials. <b>Wants</b> is your free money.</p>
     <p><b>Safe to spend today / this week</b> only uses Wants. The money left is spread evenly across the remaining days until your next payday, week by week (Monday–Sunday). Spend less one day and later days get more; overspend and the rest of the week shrinks.</p>
     <p>Every expense is paid from <b>this month's salary</b> or from <b>savings</b>. Savings purchases don't touch your monthly budget — they lower your savings balance.</p>
-    <p>Near the end of the period, Money → Overview shows the <b>leftover</b>. Press <i>Move to savings</i> to put it aside.</p>
+    <p>When a pay period ends, <b>Today</b> asks you to <b>review the leftover</b>: you see what's left, correct the amount if your bank says otherwise, and choose to move it to savings or not. Nothing is moved automatically. You can also review early from Money → Overview.</p>
     <p>Payday is assumed to be the last working day of the month; the real date is whatever day you enter the paycheck.</p>`],
   ['Bills, subscriptions & wishlist', `<p>Bills and subscriptions have a day of the month. They appear on the calendar and in <i>Upcoming</i>, and you're reminded ahead of time. Press <b>Mark paid</b> when paid (you can change the amount — handy for electricity).</p>
     <p>The <b>Wishlist</b> holds things you want or need to buy, with price, link and note. Each item shows whether it fits your budget this week, this month, only from savings, or not yet. Tick it when bought and choose salary or savings — it's booked to the right budget automatically.</p>`],
-  ['Gym', `<p>Track workouts in Hevy as usual. To bring them in: in Hevy open the workout → <b>Share</b>. On Android pick <b>Oracle 2</b>; otherwise choose <i>Copy</i> and paste on Gym → Import. Several workouts at once are fine, and importing the same one twice just updates it.</p>
+  ['Gym', `<p>Track workouts in Hevy as usual. To bring them in: in Hevy open the workout → <b>Share</b> → copy it <b>as text</b>. Then in Oracle 2 go to Gym → <b>Import workout</b> → <b>Paste from clipboard</b>, check the preview and press <b>Save</b>. Several workouts at once are fine, and importing the same one twice just updates it. (If Hevy shares text straight to other apps, <i>Oracle 2</i> may also appear in its share list once the app is installed from Chrome.)</p>
     <p>Gym shows workouts per week, sets per muscle group (aim for 10–20 hard sets a week per muscle), strength progress per exercise (estimated 1-rep max), personal records and tips under <i>Where to improve</i>. Log weight and waist regularly (morning, same conditions) to see real trends; set a goal weight in Settings.</p>`],
   ['Calendar, records & reminders', `<p>The <b>Calendar</b> shows everything per day: ◆ workouts, − spending, + income, ▲ bills due, ✓ bills paid, ✦ birthdays, □ tasks. Tap a day for the details.</p>
     <p><b>Records</b> holds people (birthday, relation, gift ideas) and tasks & notes.</p>
@@ -895,7 +938,7 @@ const A = {
     const next = val('pc_date') ? estNextPayday(val('pc_date')) : '';
     $('#pc_ok').disabled = tot !== 100 || amt <= 0;
     $('#pc_pv').innerHTML = `<div class="meter" style="height:10px">${['needs', 'wants', 'savings'].map(k => `<i style="width:${sp[k]}%;background:${PAL[k]}"></i>`).join('')}</div>
-      <div class="list mt">${['needs', 'wants', 'savings'].map(k => `<div class="li"><i class="dot" style="background:${PAL[k]}"></i><span class="t">${k[0].toUpperCase() + k.slice(1)}${k === 'savings' ? ' <span class="muted small">→ added to savings now</span>' : k === 'needs' ? ' <span class="muted small">bills, food…</span>' : ' <span class="muted small">safe-to-spend money</span>'}</span><span>${eur(amt * sp[k] / 100)}</span></div>`).join('')}</div>
+      <div class="list mt">${['needs', 'wants', 'savings'].map(k => `<div class="li"><i class="dot" style="background:${PAL[k]}"></i><span class="t">${k[0].toUpperCase() + k.slice(1)}${k === 'savings' ? ' <span class="muted small">→ to savings when you approve</span>' : k === 'needs' ? ' <span class="muted small">bills, food…</span>' : ' <span class="muted small">safe-to-spend money</span>'}</span><span>${eur(amt * sp[k] / 100)}</span></div>`).join('')}</div>
       <div class="small ${tot === 100 ? 'muted' : 'bad'}">${tot === 100 ? `Covers ${fd(val('pc_date') || TODAY)} until ~${next ? fd(addDays(next, -1)) : ''} (next payday est. ${next ? fdl(next) : ''})` : `Split adds up to ${tot}% — must be 100%`}</div>`;
   },
   pcApprove() {
@@ -903,6 +946,7 @@ const A = {
     const id = uid(); D.paychecks.push({id, date, amount: amt, split});
     if (split.savings) D.savingsMoves.push({id: uid(), date, amount: r2(amt * split.savings / 100), kind: 'deposit', note: 'From paycheck', paycheckId: id});
     closeModal(); toast(`Paycheck approved · ${eur(amt * split.wants / 100)} for wants`); commit();
+    const pend = periodsToReview()[0]; if (pend) setTimeout(() => A.review(pend.pc.id), 500);
   },
   expense(id, date) {
     const t = id ? D.transactions.find(x => x.id === id) : {date: date || TODAY, category: 'Food', source: 'salary', amount: ''};
@@ -943,15 +987,25 @@ const A = {
     D.transactions.push({id: tid, date: val('pb_date'), amount: r2(num(val('pb_amt'))), category: r.category || (r.type === 'subscription' ? 'Subscriptions' : 'Bills'), bucket: 'needs', source: 'salary', note: r.name, recurringId: rid});
     (r.payments ||= {})[ym] = tid; closeModal(); commit();
   },
-  moveLeftover() {
-    const p = currentPeriod(), st = periodStats(p), amt = r2(st.leftover);
-    modal(`<h2>Move leftover to savings</h2><label class="f">Amount (€)<input type="number" step="0.01" id="lo_amt" value="${amt}"></label><div class="small muted mt">Projected leftover: ${eur(st.needsLeft)} needs − ${eur(st.committed)} bills still due + ${eur(st.wantsLeft)} wants.</div>
-      <div class="row mt"><span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.moveLeftoverSave()">Move</button></div>`);
+  review(pcId) {
+    const pc = D.paychecks.find(x => x.id === pcId); if (!pc) return;
+    const p = periodOf(pc), st = periodStats(p), ended = p.end < TODAY, est = Math.max(0, r2(st.leftover));
+    modal(`<h2>${ended ? 'Close' : 'Review'} pay period · ${fd(p.start)} – ${fd(p.end)}</h2>
+      <table class="small"><tr><td class="muted">Needs budget</td><td class="n">${eur(p.raw.needs)}</td></tr><tr><td class="muted">Needs spent</td><td class="n">−${eur(st.spent.needs).replace('−', '')}</td></tr>
+      ${st.committed ? `<tr><td class="muted">Bills still due this period</td><td class="n">−${eur(st.committed)}</td></tr>` : ''}
+      <tr><td class="muted">Wants budget</td><td class="n">${eur(p.raw.wants)}</td></tr><tr><td class="muted">Wants spent</td><td class="n">−${eur(st.spent.wants).replace('−', '')}</td></tr>
+      <tr><td><b>Calculated leftover</b></td><td class="n"><b class="${st.leftover < 0 ? 'bad' : 'acc'}">${eur(st.leftover)}</b></td></tr></table>
+      <label class="f mt">Amount to move to savings (€) — correct it if your bank says otherwise<input type="number" inputmode="decimal" step="0.01" min="0" id="lo_amt" value="${est}"></label>
+      <div class="small faint mt">Nothing moves until you confirm.${ended ? '' : ' Reviewing early takes this money out of what\'s left to spend this period.'}</div>
+      <div class="row wrap mt"><button class="btn ghost" onclick="closeModal()">Later</button><span class="sp"></span><button class="btn" onclick="A.reviewSave('${pcId}',0)">Don't move anything</button><button class="btn pri" onclick="A.reviewSave('${pcId}',1)">Move to savings</button></div>`);
   },
-  moveLeftoverSave() {
-    const p = currentPeriod(), a = r2(num(val('lo_amt'))); if (a <= 0) return;
-    D.savingsMoves.push({id: uid(), date: TODAY, amount: a, kind: 'deposit', note: 'Leftover from ' + fd(p.start) + ' period'});
-    p.pc.leftoverMoved = r2((p.pc.leftoverMoved || 0) + a); closeModal(); commit();
+  reviewSave(pcId, move) {
+    const pc = D.paychecks.find(x => x.id === pcId), p = periodOf(pc), a = move ? r2(num(val('lo_amt'))) : 0;
+    if (move && a <= 0) return toast('Enter the amount, or choose "Don\'t move anything"');
+    if (a > 0) D.savingsMoves.push({id: uid(), date: TODAY, amount: a, kind: 'deposit', note: 'Leftover from ' + fd(p.start) + ' – ' + fd(p.end)});
+    pc.leftoverMoved = a; pc.closed = true;
+    closeModal(); toast(a > 0 ? `${eur(a)} moved to savings` : 'Period closed — nothing moved'); commit();
+    const next = periodsToReview()[0]; if (next) setTimeout(() => A.review(next.pc.id), 400);
   },
   saveMove(kind) {
     modal(`<h2>${kind === 'withdraw' ? 'Withdraw from' : 'Deposit to'} savings</h2><div class="formgrid"><label class="f">Amount (€)<input type="number" step="0.01" id="sm_amt"></label><label class="f">Date<input type="date" id="sm_date" value="${TODAY}"></label><label class="f full">Note<input id="sm_note"></label></div>
@@ -1030,9 +1084,13 @@ const A = {
     closeModal(); commit();
   },
   del(coll, id) { if (coll === 'transactions') for (const w of D.wishlist) if (w.txId === id) Object.assign(w, {bought: false, txId: null, paid: null}); D[coll] = D[coll].filter(x => x.id !== id); if (coll === 'transactions') for (const r of D.recurring) for (const k in r.payments || {}) if (r.payments[k] === id) delete r.payments[k]; commit(); },
-  hevyParse() { UI.hevyDraft = $('#hevyText').value; UI.importPreview = parseHevy(UI.hevyDraft); render(); },
+  async hevyPaste() {
+    try { const t = await navigator.clipboard.readText(); if (!t.trim()) return toast('The clipboard is empty — copy the workout in Hevy first');
+      $('#hevyText').value = t; importLive(t); if (innerWidth < 760) $('#impPv').scrollIntoView({behavior: 'smooth', block: 'center'}); }
+    catch { toast('Paste was blocked — long-press the text box and choose Paste'); $('#hevyText').focus(); }
+  },
   hevyFile(inp) { const f = inp.files[0]; if (!f) return; f.text().then(t => { UI.hevyDraft = t; UI.importPreview = parseHevy(t); render(); }); },
-  hevySave() { const r = addWorkouts(UI.importPreview || []); UI.importPreview = null; UI.hevyDraft = ''; toast(`${r.added} added${r.replaced ? `, ${r.replaced} updated` : ''}`); UI.gymTab = 'history'; commit(); },
+  hevySave() { const r = addWorkouts((UI.importPreview || []).map(({noDate, ...w}) => w)); UI.importPreview = null; UI.hevyDraft = ''; toast(`${r.added} added${r.replaced ? `, ${r.replaced} updated` : ''}`); UI.gymTab = 'history'; commit(); },
   syncSetup() {
     modal(`<h2>Set up sync</h2><div class="small" style="line-height:1.8">
       <b class="acc">1.</b> Make a GitHub token that can only touch gists: <a class="acc" href="https://github.com/settings/tokens/new?scopes=gist&description=Oracle%202%20sync" target="_blank" rel="noopener">open GitHub ↗</a> → set <i>Expiration</i> to <i>No expiration</i> → <i>Generate token</i> → copy it.<br>
