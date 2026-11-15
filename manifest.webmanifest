@@ -1,0 +1,27 @@
+{
+  "name": "Oracle 2",
+  "short_name": "Oracle 2",
+  "description": "Private day-to-day assistant: money, gym, birthdays, tasks, wishlist and calendar.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b0b0d",
+  "theme_color": "#0b0b0d",
+  "categories": ["finance", "health", "productivity"],
+  "icons": [
+    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
+    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"},
+    {"src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ],
+  "share_target": {
+    "action": "./",
+    "method": "GET",
+    "params": {"title": "title", "text": "text", "url": "url"}
+  },
+  "shortcuts": [
+    {"name": "Money", "url": "./?view=money", "icons": [{"src": "icon-192.png", "sizes": "192x192"}]},
+    {"name": "Gym", "url": "./?view=gym", "icons": [{"src": "icon-192.png", "sizes": "192x192"}]}
+  ]
+}

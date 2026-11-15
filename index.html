@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Oracle 2</title>
+<meta name="description" content="Oracle 2 — a private day-to-day assistant: money, gym progress, birthdays, tasks, wishlist and calendar. Your data stays on your device.">
+<meta name="theme-color" content="#0b0b0d">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Oracle 2">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<aside id="nav">
+  <div class="brand"><svg viewBox="0 0 32 32" width="22" height="22"><circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="2.4"/><circle cx="16" cy="16" r="4.2" fill="var(--accent)"/><path d="M16 1v5M16 26v5M1 16h5M26 16h5" stroke="currentColor" stroke-width="2"/></svg><span>oracle<b>.2</b></span></div>
+  <nav>
+    <a data-view="today"><i>01</i><span class="ico">◉</span><span class="lb">Today</span></a>
+    <a data-view="money"><i>02</i><span class="ico">€</span><span class="lb">Money</span></a>
+    <a data-view="gym"><i>03</i><span class="ico">◆</span><span class="lb">Gym</span></a>
+    <a data-view="records"><i>04</i><span class="ico">✦</span><span class="lb">Records</span></a>
+    <a data-view="calendar"><i>05</i><span class="ico">▦</span><span class="lb">Calendar</span></a>
+    <a data-view="settings"><i>06</i><span class="ico">⚙&#xFE0E;</span><span class="lb">Settings</span></a>
+    <a data-view="help"><i>07</i><span class="ico">?</span><span class="lb">Help</span></a>
+  </nav>
+  <button id="quickBtn" class="quick">+ Quick add <kbd>Ctrl K</kbd></button>
+  <div class="navfoot"><span id="saveState">● saved on this device</span></div>
+</aside>
+<main>
+  <header id="top">
+    <div class="crumb" id="crumb">&gt; DECODING // TODAY</div>
+    <div class="tx"><span class="segs" id="segs"></span><span id="clock">TX 00:00:00</span></div>
+  </header>
+  <section id="view"></section>
+</main>
+<button id="fab" class="fab" aria-label="Quick add">+</button>
+<div id="tip" class="tip"></div>
+<div id="modal" class="modal hidden"><div class="modal-box" id="modalBox"></div></div>
+<script src="reminders.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
