@@ -143,6 +143,10 @@ svg text{font-family:var(--mono)}
 .qa .help code{color:var(--text);background:#18181d;padding:1px 5px;border-radius:3px}
 .formgrid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .formgrid .full{grid-column:1/-1}
+.formgrid>*{min-width:0}
+label.f input,label.f select,label.f textarea{width:100%;box-sizing:border-box}
+.modal-box{overflow-x:hidden}
+.goals-grid{align-items:start}
 .toast{position:fixed;bottom:22px;right:22px;background:#15201d;border:1px solid var(--accent-dim);padding:10px 14px;border-radius:8px;z-index:60;animation:fade 2.6s forwards}
 @keyframes fade{0%,80%{opacity:1}100%{opacity:0}}
 .insight{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid #1a1a1f}
@@ -151,6 +155,7 @@ svg text{font-family:var(--mono)}
 
 nav a .ico{display:none}
 .fab{display:none}
+.topbtn{display:none}
 .updbar{position:fixed;left:50%;transform:translateX(-50%);top:14px;z-index:70;display:flex;gap:14px;align-items:center;background:#122420;border:1px solid var(--accent-dim);border-radius:8px;padding:8px 10px 8px 14px;box-shadow:0 10px 30px rgba(0,0,0,.5)}
 #saveState.bad{color:var(--bad)}#saveState.warn{color:var(--warn)}
 .tour h2{font-size:15px;margin-bottom:12px}.tour p{color:var(--text);line-height:1.7;margin:8px 0}.tour p.muted{color:var(--muted)}
@@ -169,7 +174,10 @@ nav a .ico{display:none}
   html,body{font-size:13px}
   body{flex-direction:column}
   #nav{position:fixed;left:0;right:0;bottom:0;z-index:30;width:auto;flex-direction:row;padding:6px 4px calc(6px + env(safe-area-inset-bottom));border-right:0;border-top:1px solid var(--line);gap:0;background:rgba(10,10,12,.96);backdrop-filter:blur(8px)}
-  .brand,.navfoot,#quickBtn{display:none}
+  .brand,.navfoot,#quickBtn,nav a.nav-sec{display:none}
+  #clock{display:none}
+  .topbtn{display:inline-flex;width:34px;height:34px;align-items:center;justify-content:center;border:1px solid var(--line2);border-radius:8px;color:var(--muted);font-size:16px;cursor:pointer}
+  .topbtn.on{color:var(--accent);border-color:var(--accent-dim)}
   nav{flex-direction:row;margin:0;flex:1;justify-content:space-around;gap:0}
   nav a{flex-direction:column;align-items:center;gap:1px;padding:6px 2px;font-size:10px;flex:1;border-radius:8px}
   nav a i{display:none}nav a .ico{display:block;font-size:17px;line-height:1.2;color:var(--faint)}

@@ -23,10 +23,11 @@
     <a data-view="today"><i>01</i><span class="ico">◉</span><span class="lb">Today</span></a>
     <a data-view="money"><i>02</i><span class="ico">€</span><span class="lb">Money</span></a>
     <a data-view="gym"><i>03</i><span class="ico">◆</span><span class="lb">Gym</span></a>
-    <a data-view="records"><i>04</i><span class="ico">✦</span><span class="lb">Records</span></a>
-    <a data-view="calendar"><i>05</i><span class="ico">▦</span><span class="lb">Calendar</span></a>
-    <a data-view="settings"><i>06</i><span class="ico">⚙&#xFE0E;</span><span class="lb">Settings</span></a>
-    <a data-view="help"><i>07</i><span class="ico">?</span><span class="lb">Help</span></a>
+    <a data-view="goals"><i>04</i><span class="ico">◎</span><span class="lb">Goals</span></a>
+    <a data-view="records"><i>05</i><span class="ico">✦</span><span class="lb">Records</span></a>
+    <a data-view="calendar"><i>06</i><span class="ico">▦</span><span class="lb">Calendar</span></a>
+    <a data-view="settings" class="nav-sec"><i>07</i><span class="ico">⚙&#xFE0E;</span><span class="lb">Settings</span></a>
+    <a data-view="help" class="nav-sec"><i>08</i><span class="ico">?</span><span class="lb">Help</span></a>
   </nav>
   <button id="quickBtn" class="quick">+ Quick add <kbd>Ctrl K</kbd></button>
   <div class="navfoot"><span id="saveState">● saved on this device</span></div>
@@ -34,7 +35,7 @@
 <main>
   <header id="top">
     <div class="crumb" id="crumb">&gt; DECODING // TODAY</div>
-    <div class="tx"><span class="segs" id="segs"></span><span id="clock">TX 00:00:00</span></div>
+    <div class="tx"><span class="segs" id="segs"></span><span id="clock">TX 00:00:00</span><a class="topbtn" data-view="settings" aria-label="Settings">⚙&#xFE0E;</a><a class="topbtn" data-view="help" aria-label="Help">?</a></div>
   </header>
   <section id="view"></section>
 </main>

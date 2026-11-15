@@ -32,6 +32,14 @@ function computeReminders(D, today) {
     }
   }
   if (pd(today).getDay() === 1) out.push({key: `week:${today}`, title: 'Your week is ready', body: 'Open Oracle 2 to see this week\'s bills, birthdays, tasks and budget.'});
+  const wd = (pd(today).getDay() + 6) % 7;
+  for (const g of D.lifeGoals || []) {
+    if (g.status !== 'active') continue;
+    const checked = (g.log || []).some(l => l.date === today);
+    const due = g.remind === 'daily' || (g.remind === 'weekly' && wd === (+g.remindDay || 0)) || (g.remind === 'monthly' && today.slice(8) === '01');
+    if (due && !checked) out.push({key: `goal:${g.id}:${today}`, title: `Goal check-in: ${g.title}`, body: g.why || (g.targetDate ? `${diff(today, g.targetDate)} days to your deadline` : 'How is it going? Tap to update your progress.')});
+    if (g.targetDate) { const d = diff(today, g.targetDate); if (d === lead || d === 1 || d === 0) out.push({key: `goaldl:${g.id}:${d}`, title: `Goal deadline ${when(d)}: ${g.title}`, body: nice(g.targetDate)}); }
+  }
   for (const t of D.tasks || []) if (!t.done && t.due === today) out.push({key: `task:${t.id}:${today}`, title: 'Due today', body: t.title});
   return out;
 }

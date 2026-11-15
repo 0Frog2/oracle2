@@ -58,8 +58,8 @@ function parseDateWord(w) {
 }
 
 // ------------------------------------------------------------------ data, storage & sync
-const APP_VERSION = '2.1.1', DATA_VERSION = 2;
-const COLLS = ['wishlist', 'people', 'tasks', 'paychecks', 'transactions', 'savingsMoves', 'recurring', 'goals', 'workouts', 'body'];
+const APP_VERSION = '2.2.0', DATA_VERSION = 2;
+const COLLS = ['lifeGoals', 'wishlist', 'people', 'tasks', 'paychecks', 'transactions', 'savingsMoves', 'recurring', 'goals', 'workouts', 'body'];
 let D = null, saveTimer = null, SNAP = {}, SYNC = null, NOTIFIED = {};
 const UI = {view: 'today', moneyTab: 'overview', gymTab: 'overview', recTab: 'people', calMonth: TODAY.slice(0, 7), calSel: TODAY, gymEx: null, txFilter: 'period', search: '', importPreview: null, sync: {state: 'off', msg: ''}};
 
@@ -82,7 +82,7 @@ const store = {
 function defaults() {
   return {version: DATA_VERSION, settings: {split: {needs: 50, wants: 30, savings: 20}, reminderDays: 7, startingSavings: 0, gymGoal: {weightMin: 0, weightMax: 0}, onboarded: false,
     categories: [['Bills', 'needs'], ['Subscriptions', 'needs'], ['Food', 'needs'], ['Transport', 'needs'], ['Health', 'needs'], ['Eating out', 'wants'], ['Entertainment', 'wants'], ['Hobbies', 'wants'], ['Shopping', 'wants'], ['Investing', 'savings'], ['Other', 'wants']].map(([name, bucket]) => ({name, bucket}))},
-    wishlist: [], people: [], tasks: [], paychecks: [], transactions: [], savingsMoves: [], recurring: [], goals: [], workouts: [], body: [], meta: {tomb: {}, settingsU: {}}};
+    lifeGoals: [], wishlist: [], people: [], tasks: [], paychecks: [], transactions: [], savingsMoves: [], recurring: [], goals: [], workouts: [], body: [], meta: {tomb: {}, settingsU: {}}};
 }
 // Upgrades older saved data so updates never lose anything. Add a step here whenever the format changes.
 function migrate(d) {
@@ -496,6 +496,7 @@ function eventsOn(date) {
   for (const o of billOccurrences(date, date)) ev.push({k: 'bill', g: o.paid ? '✓' : '▲', c: o.paid ? 'var(--muted)' : 'var(--warn)', t: o.r.name, s: `${eur(o.r.amount)} · ${o.r.type}${o.paid ? ' · paid' : ''}`});
   for (const p of D.people) { const nb = nextBirthday(p.birthday); const md = (p.birthday || '').slice(-5);
     if (md && date.slice(5) === md) { const by = birthYear(p.birthday); ev.push({k: 'bday', g: '✦', c: 'var(--extra)', t: `${p.name}'s birthday`, s: by ? `turns ${+date.slice(0, 4) - by}` : ''}); } }
+  for (const g of D.lifeGoals) { if (g.targetDate === date && g.status !== 'done') ev.push({k: 'goal', g: '◎', c: 'var(--wants)', t: `Goal deadline: ${g.title}`, s: `${Math.round(goalProgress(g) * 100)}% done`}); if (g.doneAt === date) ev.push({k: 'goal', g: '★', c: 'var(--good)', t: `Achieved: ${g.title}`, s: ''}); }
   for (const t of D.tasks) if (t.due === date) ev.push({k: 'task', g: t.done ? '☑' : '□', c: t.done ? 'var(--muted)' : 'var(--text)', t: t.title, s: t.done ? 'done' : ''});
   for (const b of D.body) if (b.date === date) ev.push({k: 'body', g: '○', c: 'var(--muted)', t: 'Body log', s: [b.weight && b.weight + ' kg', b.waist && b.waist + ' cm waist'].filter(Boolean).join(' · ')});
   return ev;
@@ -557,6 +558,12 @@ V.today = () => {
   for (const o of billOccurrences(TODAY, addDays(TODAY, Math.max(lead, 14)))) if (!o.paid) up.push({d: o.date, g: '▲', c: 'var(--warn)', t: `${o.r.name}`, s: eur(o.r.amount), bill: o});
   for (const t of D.tasks) if (!t.done && t.due && t.due <= addDays(TODAY, 14)) up.push({d: t.due, g: '□', c: t.due < TODAY ? 'var(--bad)' : 'var(--text)', t: t.title, s: t.due < TODAY ? 'overdue' : '', task: t});
   up.sort((a, b) => a.d < b.d ? -1 : 1);
+  for (const g of D.lifeGoals) if (g.status === 'active' && g.targetDate && g.targetDate >= TODAY && diff(TODAY, g.targetDate) <= Math.max(lead, 14)) up.push({d: g.targetDate, g: '◎', c: 'var(--wants)', t: `Goal: ${g.title}`, s: `${Math.round(goalProgress(g) * 100)}% done`});
+  up.sort((a, b) => a.d < b.d ? -1 : 1);
+  const actG = D.lifeGoals.filter(g => g.status === 'active').sort((a, b) => (goalDueToday(b) - goalDueToday(a)) || ((a.targetDate || '9') < (b.targetDate || '9') ? -1 : 1));
+  const goalsCard = actG.length ? `<div class="card"><h3>Goals <span class="act"><a class="small acc" style="cursor:pointer;text-transform:none;letter-spacing:0" onclick="go('goals')">all ${actG.length} →</a></span></h3>${actG.slice(0, 4).map(g => { const pc = Math.round(goalProgress(g) * 100), due = goalDueToday(g);
+    return `<div style="margin:8px 0;cursor:pointer" onclick="${due ? `A.goalCheckin('${g.id}')` : `go('goals')`}"><div class="row small"><span class="t" style="flex:1">${esc(g.title)}</span>${due ? '<span class="tag" style="color:var(--accent);border-color:var(--accent-dim)">check in</span>' : ''}<span class="muted">${g.kind === 'simple' ? (g.targetDate ? `${diff(TODAY, g.targetDate)}d left` : '') : pc + '%'}</span></div>${g.kind !== 'simple' ? `<div class="meter" style="height:5px;margin-top:4px"><i style="width:${pc}%;background:var(--accent)"></i></div>` : ''}</div>`; }).join('')}</div>`
+    : `<div class="card"><h3>Goals</h3><div class="small muted">Set a goal and get reminded to check in. <a class="acc" style="cursor:pointer" onclick="go('goals');A.goal2()">Add a goal →</a></div></div>`;
   const upcoming = `<div class="card"><h3>Upcoming · next 14 days <span class="act faint">reminders ${lead}d ahead</span></h3><div class="list">${up.length ? up.map(u => {
     const dd = diff(TODAY, u.d), when = dd < 0 ? `${-dd}d ago` : dd === 0 ? 'today' : dd === 1 ? 'tomorrow' : `in ${dd}d`;
     return `<div class="li"><span style="color:${u.c};width:14px">${u.g}</span><span class="t">${esc(u.t)} <span class="muted small">${esc(u.s)}</span></span>
@@ -569,7 +576,7 @@ V.today = () => {
   const body = `<div class="card"><h3>Weight · 90 days <span class="act"><button class="btn sm" onclick="A.bodyLog()">+ Log</button></span></h3>${bw.length ? lineChart([{points: bw, color: 'var(--accent)'}], {h: 190, W: 440, fmt: v => v.toFixed(1), band: goalBand(), unit: ' kg'}) : '<div class="empty">Log your weight to see the trend</div>'}</div>`;
   const rv = periodsToReview(), rvP = rv[0];
   const reviewCard = rvP ? `<div class="card briefing" style="margin-bottom:16px"><div class="row wrap"><div><div class="acc">▸ Pay period ${fd(rvP.start)} – ${fd(rvP.end)} has ended</div><div class="small muted">Check the leftover and decide how much goes to savings${rv.length > 1 ? ` · ${rv.length} periods waiting` : ''}.</div></div><span class="sp"></span><button class="btn pri" onclick="A.review('${rvP.pc.id}')">Review leftover</button></div></div>` : '';
-  return `${reviewCard}<div class="grid g4">${tiles}</div><div class="mt">${briefing}</div><div class="grid g21 mt">${upcoming}<div class="grid">${buckets}${body}</div></div>`;
+  return `${reviewCard}<div class="grid g4">${tiles}</div><div class="mt">${briefing}</div><div class="grid g21 mt">${upcoming}<div class="grid">${goalsCard}${buckets}${body}</div></div>`;
 };
 
 // ---------------- money
@@ -788,6 +795,65 @@ V.records = () => {
     <button class="btn pri" onclick="${UI.recTab === 'people' ? 'A.person()' : 'A.task()'}">+ ${UI.recTab === 'people' ? 'Person' : 'Task / note'}</button></div></div>${body}`;
 };
 
+// ---------------- life goals
+const GOAL_CATS = ['Fitness', 'Health', 'Money', 'Career', 'Learning', 'Personal', 'Relationships', 'Creative', 'Other'];
+const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+function goalCurrent(g) {
+  if (g.kind !== 'number') return null;
+  const latest = k => { const b = D.body.filter(x => x[k]).sort((a, b) => a.date < b.date ? -1 : 1).pop(); return b ? +b[k] : null; };
+  if (g.source === 'weight') return latest('weight') ?? g.current ?? g.start;
+  if (g.source === 'waist') return latest('waist') ?? g.current ?? g.start;
+  if (g.source === 'savings') return r2(savingsBalance());
+  return g.current ?? g.start;
+}
+function goalProgress(g) {
+  if (g.status === 'done') return 1;
+  if (g.kind === 'checklist') { const s = g.steps || []; return s.length ? s.filter(x => x.done).length / s.length : 0; }
+  if (g.kind === 'number') { const c = goalCurrent(g), a = +g.start, b = +g.target; if (a === b) return c === b ? 1 : 0; return Math.max(0, Math.min(1, (c - a) / (b - a))); }
+  return 0;
+}
+function goalDueToday(g) {
+  if (g.status !== 'active' || !g.remind || g.remind === 'off') return false;
+  if ((g.log || []).some(l => l.date === TODAY)) return false;
+  if (g.remind === 'daily') return true;
+  if (g.remind === 'weekly') return dowi(TODAY) === (+g.remindDay || 0);
+  if (g.remind === 'monthly') return TODAY.slice(8) === '01';
+  return false;
+}
+const remindText = g => !g.remind || g.remind === 'off' ? 'no reminders' : g.remind === 'weekly' ? `check-in every ${WEEKDAYS[+g.remindDay || 0]}` : g.remind === 'monthly' ? 'check-in on the 1st of each month' : 'check-in daily';
+const goalNum = (g, v) => v == null ? '—' : (g.source === 'savings' ? eur0(v) : `${+(+v).toFixed(2)}${g.unit ? ' ' + g.unit : ''}`);
+
+function goalCard(g) {
+  const p = goalProgress(g), pct = Math.round(p * 100), last = (g.log || []).slice(-1)[0];
+  const dl = g.targetDate ? diff(TODAY, g.targetDate) : null;
+  const due = goalDueToday(g), reached = g.status === 'active' && p >= 1;
+  const steps = g.kind === 'checklist' ? `<div class="list" style="margin-top:8px">${(g.steps || []).map((s, i) => `<label class="li small" style="cursor:pointer"><input type="checkbox" ${s.done ? 'checked' : ''} ${g.status !== 'active' ? 'disabled' : ''} onchange="A.goalStep('${g.id}',${i})"><span class="t ${s.done ? 'faint' : ''}" style="white-space:normal;${s.done ? 'text-decoration:line-through' : ''}">${esc(s.text)}</span></label>`).join('')}</div>` : '';
+  const num = g.kind === 'number' ? `<div class="small muted" style="margin-top:4px">${goalNum(g, g.start)} → <b style="color:var(--text)">${goalNum(g, goalCurrent(g))}</b> → ${goalNum(g, g.target)}${g.source && g.source !== 'manual' ? ` <span class="faint">· from your ${g.source} log</span>` : ''}</div>` : '';
+  return `<div class="card ${due ? 'briefing' : ''}" style="${g.status === 'done' ? 'opacity:.75' : ''}"><h3><span style="color:var(--text);font-size:14px;text-transform:none;letter-spacing:0;white-space:normal">${g.status === 'done' ? '★ ' : ''}${esc(g.title)}</span><span class="act"><span class="tag">${esc(g.category || 'Other')}</span></span></h3>
+    ${g.why ? `<div class="small muted" style="font-style:italic;margin:-4px 0 8px">“${esc(g.why)}”</div>` : ''}
+    ${g.kind !== 'simple' || g.status === 'done' ? `<div class="row small"><span>${pct}%</span><span class="sp"></span>${g.kind === 'checklist' ? `<span class="muted">${(g.steps || []).filter(s => s.done).length}/${(g.steps || []).length} steps</span>` : ''}</div>
+    <div class="meter" style="height:8px;margin-top:4px"><i style="width:${pct}%;background:${g.status === 'done' ? 'var(--good)' : 'var(--accent)'}"></i></div>` : ''}${num}${steps}
+    <div class="small mt" style="line-height:1.7">${g.status === 'done' ? `<span class="good">Achieved ${g.doneAt ? fd(g.doneAt) + ' ' + g.doneAt.slice(0, 4) : ''}</span>` : g.status === 'paused' ? '<span class="muted">Paused</span>' :
+      `${dl === null ? '<span class="muted">no deadline</span>' : `<span class="${dl < 0 ? 'bad' : dl <= 14 ? 'warn' : 'muted'}">${dl < 0 ? `${-dl}d past deadline` : dl === 0 ? 'deadline today' : `${dl} days left`} · ${fd(g.targetDate)}</span>`} <span class="faint">· ${remindText(g)}</span>`}
+      ${last ? `<br><span class="faint">Last check-in ${ago(pd(last.date).getTime() + 12 * 3600e3).replace('just now', 'today')}${last.note ? `: ${esc(last.note)}` : ''}</span>` : ''}</div>
+    ${reached ? `<div class="small good mt">✓ Target reached — mark it achieved?</div>` : ''}
+    <div class="row wrap mt">${g.status === 'active' ? `<button class="btn ${due ? 'pri' : ''} sm" onclick="A.goalCheckin('${g.id}')">${due ? 'Check in now' : 'Check in'}</button>${reached || g.kind === 'simple' ? `<button class="btn sm" onclick="A.goalDone('${g.id}')">★ Achieved</button>` : ''}` : ''}<span class="sp"></span><button class="btn sm ghost" onclick="A.goal2('${g.id}')">edit</button></div></div>`;
+}
+V.goals = () => {
+  const f = UI.goalFilter || 'active', all = D.lifeGoals;
+  const list = all.filter(g => f === 'all' || (f === 'active' ? g.status !== 'done' : g.status === 'done'))
+    .sort((a, b) => (goalDueToday(b) - goalDueToday(a)) || ((a.status === 'paused') - (b.status === 'paused')) || ((a.targetDate || '9') < (b.targetDate || '9') ? -1 : 1));
+  const act = all.filter(g => g.status === 'active'), dueN = act.filter(goalDueToday).length;
+  const avg = act.length ? Math.round(sum(act, goalProgress) / act.length * 100) : 0;
+  const yearDone = all.filter(g => g.status === 'done' && (g.doneAt || '').startsWith(TODAY.slice(0, 4))).length;
+  return `<div class="grid g4"><div class="card stat hero"><div class="lbl">Active goals</div><div class="val">${act.length}</div><div class="sub">${all.filter(g => g.status === 'paused').length} paused</div></div>
+    <div class="card stat"><div class="lbl">Average progress</div><div class="val">${avg}%</div><div class="meter"><i style="width:${avg}%;background:var(--accent)"></i></div></div>
+    <div class="card stat"><div class="lbl">Check-ins due today</div><div class="val ${dueN ? 'acc' : ''}">${dueN}</div><div class="sub">reminders keep goals alive</div></div>
+    <div class="card stat"><div class="lbl">Achieved this year</div><div class="val">${yearDone}</div><div class="sub">${all.filter(g => g.status === 'done').length} all time</div></div></div>
+  <div class="row mt" style="margin-bottom:12px"><span class="seg">${[['active', 'Active'], ['done', 'Achieved'], ['all', 'All']].map(([k, l]) => `<button class="${f === k ? 'on' : ''}" onclick="UI.goalFilter='${k}';render()">${l}</button>`).join('')}</span><span class="sp"></span><button class="btn pri" onclick="A.goal2()">+ Goal</button></div>
+  ${list.length ? `<div class="grid g3 goals-grid">${list.map(goalCard).join('')}</div>` : `<div class="card"><div class="empty">${f === 'done' ? 'Nothing achieved yet — you\'ll get there.' : 'No goals yet. Add one — e.g. "Reach 80 kg", "Run a 5k", "Learn Blender sculpting" — and pick how often to be reminded.'}</div></div>`}`;
+};
+
 // ---------------- calendar
 V.calendar = () => {
   const [y, m] = UI.calMonth.split('-').map(Number), first = `${UI.calMonth}-01`, start = monday(first);
@@ -809,7 +875,7 @@ V.calendar = () => {
           <div class="row"><span class="n">${pd(d).getDate()}</span><span class="sp"></span>${ev.some(e => e.k === 'gym') ? '<span style="color:var(--accent)">◆</span>' : ''}</div>
           ${items.filter(e => e.k !== 'gym').slice(0, 3).map(e => `<div class="mk"><span style="color:${e.c}">${e.g}</span><span>${esc(e.t)}</span></div>`).join('')}
           ${spend ? `<div class="mk muted"><span>−${eur(spend).replace('−', '')}</span></div>` : ''}${inc.length ? `<div class="mk good"><span>+${eur(sum(D.paychecks.filter(p => p.date === d), p => p.amount), 0)}</span></div>` : ''}</div>`; }).join('')}</div>
-      <div class="mt"><div class="legend">${[['var(--accent)', '◆', 'workout'], ['var(--warn)', '▲', 'bill due'], ['var(--muted)', '✓', 'bill paid'], ['var(--extra)', '✦', 'birthday'], ['var(--text)', '□', 'task'], ['var(--good)', '+€', 'income'], ['var(--muted)', '−€', 'spent'], ['var(--savings)', '↗', 'to savings']].map(([c, g, l]) => `<span><b style="color:${c};font-weight:400">${g}</b>${l}</span>`).join('')}</div></div></div>
+      <div class="mt"><div class="legend">${[['var(--accent)', '◆', 'workout'], ['var(--warn)', '▲', 'bill due'], ['var(--muted)', '✓', 'bill paid'], ['var(--extra)', '✦', 'birthday'], ['var(--text)', '□', 'task'], ['var(--wants)', '◎', 'goal deadline'], ['var(--good)', '★', 'goal achieved'], ['var(--good)', '+€', 'income'], ['var(--muted)', '−€', 'spent'], ['var(--savings)', '↗', 'to savings']].map(([c, g, l]) => `<span><b style="color:${c};font-weight:400">${g}</b>${l}</span>`).join('')}</div></div></div>
     <div class="card" style="position:sticky;top:0"><h3>${fdl(UI.calSel)} ${UI.calSel.slice(0, 4)}</h3>
       ${sel.length ? sel.map(e => `<div class="li" style="align-items:flex-start"><span style="color:${e.c};width:14px">${e.g}</span><div style="flex:1;min-width:0"><div>${esc(e.t)}</div>${e.s ? `<div class="small muted">${esc(e.s)}</div>` : ''}</div></div>`).join('') : '<div class="empty">Nothing on this day</div>'}
       <div class="row wrap mt"><button class="btn sm" onclick="A.expense(null,'${UI.calSel}')">+ Expense</button><button class="btn sm" onclick="A.task(null,'${UI.calSel}')">+ Task</button></div></div></div>`;
@@ -838,7 +904,7 @@ V.settings = () => {
     <div class="row wrap mt"><button class="btn" onclick="A.exportData()">Export backup</button><label class="btn">Import backup<input type="file" accept=".json,application/json" hidden onchange="A.importData(this)"></label><span class="sp"></span><button class="btn ghost danger" onclick="A.wipe()">Erase all data</button></div></div></div>
   <div class="grid g2 mt"><div class="card"><h3>Spending categories <span class="act"><button class="btn sm" onclick="A.catAdd()">+ Category</button></span></h3><div class="list">${s.categories.map((c, i) => `<div class="li"><input value="${esc(c.name)}" style="flex:1" onchange="A.catEdit(${i},'name',this.value)">
       <select onchange="A.catEdit(${i},'bucket',this.value)">${['needs', 'wants', 'savings'].map(b => `<option ${c.bucket === b ? 'selected' : ''}>${b}</option>`).join('')}</select><button class="btn sm ghost danger" onclick="A.catDel(${i})">×</button></div>`).join('')}</div></div>
-  <div class="card"><h3>About</h3><div class="small muted" style="line-height:1.9">Oracle 2 · version ${APP_VERSION}<br>Updates install themselves the next time you open the app — your data stays.<br><kbd>Ctrl K</kbd> quick add · <kbd>1</kbd>–<kbd>7</kbd> switch pages · <kbd>Esc</kbd> close</div>
+  <div class="card"><h3>About</h3><div class="small muted" style="line-height:1.9">Oracle 2 · version ${APP_VERSION}<br>Updates install themselves the next time you open the app — your data stays.<br><kbd>Ctrl K</kbd> quick add · <kbd>1</kbd>–<kbd>8</kbd> switch pages · <kbd>Esc</kbd> close</div>
     <div class="row wrap mt"><button class="btn" onclick="UI.view='help';render()">Open help</button><button class="btn ghost" onclick="A.checkUpdate()">Check for update</button></div></div></div>`;
 };
 
@@ -847,12 +913,13 @@ const HELP = [
   ['Getting started', `<p>Oracle 2 keeps your money, gym progress, birthdays, tasks and plans in one place. Everything is stored <b>on this device</b> — nothing is uploaded unless you turn on sync.</p>
     <ol><li>Go to <b>Settings</b> and set your income split (needs / wants / savings — must add up to 100%) and how much you already have saved.</li>
     <li>When you get paid, press <b>+ Paycheck</b> (Money page), enter the amount and approve the split. Your budget runs from that payday until the next one.</li>
+    <li>Set a few <b>goals</b> and how often to be reminded (Goals page).</li>
     <li>Add your <b>bills & subscriptions</b> once (Money → Bills & subscriptions). They repeat every month on the same day.</li>
     <li>Log spending as it happens — the quickest way is <b>Quick add</b>.</li></ol>`],
   ['Quick add', `<p>Press <kbd>Ctrl K</kbd> on a computer or the round <b>+</b> button on a phone, type one line, press Enter. The preview shows how it will be saved.</p>
     <table><tr><td><code>24.90 eating out pizza</code></td><td>expense (amount, category, note)</td></tr><tr><td><code>60 hobbies @savings</code></td><td>paid from savings instead of salary</td></tr><tr><td><code>15 food yesterday</code></td><td>for another day (also <code>fri</code>, <code>03.12</code>)</td></tr>
     <tr><td><code>task call bank fri</code></td><td>task with a due date</td></tr><tr><td><code>note gift idea: scarf</code></td><td>note without a date</td></tr><tr><td><code>bday Ivan 14.03</code></td><td>birthday (add the year to see ages: <code>14.03.1995</code>)</td></tr>
-    <tr><td><code>want 89 headphones</code> / <code>need 120 boots</code></td><td>wishlist item</td></tr><tr><td><code>weight 86.4</code> · <code>waist 98</code></td><td>body log</td></tr><tr><td><code>income 2400</code> · <code>save 200</code></td><td>paycheck · deposit to savings</td></tr></table>`],
+    <tr><td><code>want 89 headphones</code> / <code>need 120 boots</code></td><td>wishlist item</td></tr><tr><td><code>goal run a 5k by 01.03</code></td><td>new goal (edit it later to add steps, numbers, reminders)</td></tr><tr><td><code>weight 86.4</code> · <code>waist 98</code></td><td>body log</td></tr><tr><td><code>income 2400</code> · <code>save 200</code></td><td>paycheck · deposit to savings</td></tr></table>`],
   ['Money: budget & safe to spend', `<p>Each paycheck is split by your percentages. <b>Savings</b> is moved to your savings balance straight away. <b>Needs</b> covers bills, subscriptions, food and other essentials. <b>Wants</b> is your free money.</p>
     <p><b>Safe to spend today / this week</b> only uses Wants. The money left is spread evenly across the remaining days until your next payday, week by week (Monday–Sunday). Spend less one day and later days get more; overspend and the rest of the week shrinks.</p>
     <p>Every expense is paid from <b>this month's salary</b> or from <b>savings</b>. Savings purchases don't touch your monthly budget — they lower your savings balance.</p>
@@ -862,7 +929,9 @@ const HELP = [
     <p>The <b>Wishlist</b> holds things you want or need to buy, with price, link and note. Each item shows whether it fits your budget this week, this month, only from savings, or not yet. Tick it when bought and choose salary or savings — it's booked to the right budget automatically.</p>`],
   ['Gym', `<p>Track workouts in Hevy as usual. To bring them in: in Hevy open the workout → <b>Share</b> → copy it <b>as text</b>. Then in Oracle 2 go to Gym → <b>Import workout</b> → <b>Paste from clipboard</b>, check the preview and press <b>Save</b>. Several workouts at once are fine, and importing the same one twice just updates it. (If Hevy shares text straight to other apps, <i>Oracle 2</i> may also appear in its share list once the app is installed from Chrome.)</p>
     <p>Gym shows workouts per week, sets per muscle group (aim for 10–20 hard sets a week per muscle), strength progress per exercise (estimated 1-rep max), personal records and tips under <i>Where to improve</i>. Log weight and waist regularly (morning, same conditions) to see real trends; set a goal weight in Settings.</p>`],
-  ['Calendar, records & reminders', `<p>The <b>Calendar</b> shows everything per day: ◆ workouts, − spending, + income, ▲ bills due, ✓ bills paid, ✦ birthdays, □ tasks. Tap a day for the details.</p>
+  ['Goals', `<p>Goals are for anything you want to achieve — fitness, learning, career, personal. Each goal can be measured three ways: <b>done / not done</b>, a list of <b>steps</b> you tick off, or <b>a number</b> from a start to a target (e.g. 87 → 80 kg). Number goals can update themselves from your <b>weight</b> or <b>waist</b> log or your <b>savings</b> balance.</p>
+    <p>Pick how often you want to be reminded — daily, weekly on a day you choose, or monthly. On that day the goal is highlighted, shows on Today, and you get a notification. <b>Check in</b> to update progress and write a short note on how it's going; your notes build a history you can look back on. Add a target date to see the countdown and get a reminder before the deadline. When you're there, press <b>★ Achieved</b>.</p>`],
+  ['Calendar, records & reminders', `<p>The <b>Calendar</b> shows everything per day: ◆ workouts, − spending, + income, ▲ bills due, ✓ bills paid, ✦ birthdays, □ tasks, ◎ goal deadlines, ★ goals achieved. Tap a day for the details.</p>
     <p><b>Records</b> holds people (birthday, relation, gift ideas) and tasks & notes.</p>
     <p><b>Reminders</b>: birthdays and bills at least 7 days ahead (change in Settings), the day before and on the day; a weekly summary every Monday. Turn on notifications in Settings. On Android and desktop they also arrive while the app is closed (checked a few times a day); on iPhone they show when you open the app.</p>`],
   ['Install on phone & computer', `<p><b>Android (Chrome):</b> open the app's address → menu ⋮ → <i>Add to Home screen / Install app</i>.</p>
@@ -1054,6 +1123,72 @@ const A = {
     D.transactions = D.transactions.filter(t => t.id !== w.txId);
     Object.assign(w, {bought: false, boughtAt: null, paid: null, txId: null, source: null}); commit();
   },
+  goal2(id) {
+    const g = id ? D.lifeGoals.find(x => x.id === id) : {kind: 'simple', category: 'Personal', remind: 'weekly', remindDay: 0, status: 'active', source: 'manual', steps: []};
+    UI.gk = g.kind;
+    const kindBtn = (k, l) => `<button class="${g.kind === k ? 'on' : ''}" onclick="this.parentNode.querySelectorAll('button').forEach(b=>b.classList.remove('on'));this.classList.add('on');UI.gk='${k}';document.querySelectorAll('[data-gk]').forEach(e=>e.style.display=e.dataset.gk==='${k}'?'':'none')">${l}</button>`;
+    modal(`<h2>${id ? 'Edit' : 'New'} goal</h2><div class="formgrid">
+      <label class="f full">Goal<input id="gg_t" value="${esc(g.title || '')}" placeholder="Reach 80 kg, run a 5k, read 12 books…"></label>
+      <label class="f full">Why it matters (shown with reminders)<input id="gg_why" value="${esc(g.why || '')}" placeholder="optional"></label>
+      <label class="f">Category<select id="gg_cat">${GOAL_CATS.map(c => `<option ${c === g.category ? 'selected' : ''}>${c}</option>`).join('')}</select></label>
+      <label class="f">Target date (optional)<input type="date" id="gg_date" value="${g.targetDate || ''}"></label>
+      <div class="full"><div class="small muted" style="margin-bottom:4px">HOW YOU MEASURE IT</div><span class="seg">${kindBtn('simple', 'Done / not done')}${kindBtn('checklist', 'Steps')}${kindBtn('number', 'A number')}</span></div>
+      <label class="f full" data-gk="checklist" style="${g.kind === 'checklist' ? '' : 'display:none'}">Steps — one per line<textarea id="gg_steps" rows="5" placeholder="Buy running shoes&#10;Run 2 km&#10;Run 5 km">${esc((g.steps || []).map(s => s.text).join('\n'))}</textarea></label>
+      <div class="full formgrid" data-gk="number" style="${g.kind === 'number' ? '' : 'display:none'};grid-template-columns:1fr 1fr">
+        <label class="f">Track automatically from<select id="gg_src">${[['manual', 'I\'ll enter it'], ['weight', 'Body weight log'], ['waist', 'Waist log'], ['savings', 'Savings balance']].map(([k, l]) => `<option value="${k}" ${g.source === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="f">Unit<input id="gg_unit" value="${esc(g.unit || '')}" placeholder="kg, km, books…"></label>
+        <label class="f">Start value<input type="number" inputmode="decimal" step="any" id="gg_start" value="${g.start ?? ''}"></label>
+        <label class="f">Target value<input type="number" inputmode="decimal" step="any" id="gg_target" value="${g.target ?? ''}"></label></div>
+      <label class="f">Remind me to check in<select id="gg_rem" onchange="$('#gg_dayw').style.display=this.value==='weekly'?'':'none'">${[['off', 'Never'], ['daily', 'Every day'], ['weekly', 'Every week'], ['monthly', 'Every month (1st)']].map(([k, l]) => `<option value="${k}" ${g.remind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="f" id="gg_dayw" style="${g.remind === 'weekly' ? '' : 'display:none'}">On<select id="gg_day">${WEEKDAYS.map((d, i) => `<option value="${i}" ${+g.remindDay === i ? 'selected' : ''}>${d}</option>`).join('')}</select></label>
+      ${id ? `<label class="f">Status<select id="gg_status">${[['active', 'Active'], ['paused', 'Paused'], ['done', 'Achieved']].map(([k, l]) => `<option value="${k}" ${g.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>` : ''}</div>
+      <div class="row mt">${id ? `<button class="btn ghost danger" onclick="if(confirm('Delete this goal?')){A.del('lifeGoals','${id}');closeModal()}">Delete</button>` : ''}<span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.goal2Save('${id || ''}')">Save</button></div>`);
+  },
+  goal2Save(id) {
+    const old = id ? D.lifeGoals.find(x => x.id === id) : null;
+    const g = {title: val('gg_t'), why: val('gg_why'), category: val('gg_cat'), targetDate: val('gg_date'), kind: UI.gk, remind: val('gg_rem'), remindDay: +val('gg_day') || 0};
+    if (!g.title) return toast('Give the goal a name');
+    if (g.kind === 'checklist') {
+      const prev = (old && old.steps) || [];
+      g.steps = val('gg_steps').split('\n').map(t => t.trim()).filter(Boolean).map(text => ({text, done: !!(prev.find(s => s.text === text) || {}).done}));
+      if (!g.steps.length) return toast('Add at least one step');
+    }
+    if (g.kind === 'number') {
+      Object.assign(g, {source: val('gg_src'), unit: val('gg_unit'), target: num(val('gg_target'))});
+      const cur = g.source === 'manual' ? null : goalCurrent({...g, kind: 'number'});
+      g.start = val('gg_start') === '' ? (cur ?? 0) : num(val('gg_start'));
+      if (val('gg_target') === '') return toast('Set a target value');
+      if (g.source === 'manual' && (!old || old.current == null)) g.current = g.start;
+    }
+    if (id) { const st = val('gg_status'); if (st === 'done' && old.status !== 'done') g.doneAt = TODAY; if (st !== 'done') g.doneAt = null; g.status = st; Object.assign(old, g); }
+    else D.lifeGoals.push({id: uid(), created: TODAY, status: 'active', log: [], ...g});
+    closeModal(); commit();
+  },
+  goalStep(id, i) {
+    const g = D.lifeGoals.find(x => x.id === id), s = g.steps[i]; s.done = !s.done;
+    if (s.done) (g.log ||= []).push({date: TODAY, note: '✓ ' + s.text});
+    commit(); if (goalProgress(g) >= 1) toast('All steps done — mark the goal achieved ★');
+  },
+  goalCheckin(id) {
+    const g = D.lifeGoals.find(x => x.id === id), cur = goalCurrent(g);
+    modal(`<h2>Check in · ${esc(g.title)}</h2>${g.why ? `<div class="small muted" style="font-style:italic">“${esc(g.why)}”</div>` : ''}
+      ${g.kind === 'number' ? (g.source === 'manual' ? `<label class="f mt">Where are you now? (${esc(g.unit || 'value')}) — target ${goalNum(g, g.target)}<input type="number" inputmode="decimal" step="any" id="gc_val" value="${cur ?? ''}"></label>`
+        : `<div class="small mt">Now: <b>${goalNum(g, cur)}</b> (from your ${g.source} log) · target ${goalNum(g, g.target)}${g.source !== 'savings' ? ` <button class="btn sm" onclick="closeModal();A.bodyLog()">Log ${g.source}</button>` : ''}</div>`) : ''}
+      ${g.kind === 'checklist' ? `<div class="list mt">${g.steps.map((s, i) => `<label class="li small"><input type="checkbox" data-step="${i}" ${s.done ? 'checked' : ''}><span class="t" style="white-space:normal">${esc(s.text)}</span></label>`).join('')}</div>` : ''}
+      <label class="f mt">How is it going? (optional)<textarea id="gc_note" rows="3" placeholder="What did you do, what's blocking you, next step…"></textarea></label>
+      ${(g.log || []).length ? `<div class="small faint mt" style="line-height:1.7">${g.log.slice(-4).reverse().map(l => `${fd(l.date)}${l.value != null ? ' · ' + goalNum(g, l.value) : ''}${l.note ? ' — ' + esc(l.note) : ''}`).join('<br>')}</div>` : ''}
+      <div class="row wrap mt"><button class="btn ghost" onclick="closeModal()">Cancel</button><span class="sp"></span><button class="btn" onclick="A.goalCheckinSave('${id}',1)">★ Achieved!</button><button class="btn pri" onclick="A.goalCheckinSave('${id}',0)">Save check-in</button></div>`);
+  },
+  goalCheckinSave(id, achieved) {
+    const g = D.lifeGoals.find(x => x.id === id), e = {date: TODAY, note: val('gc_note')};
+    if (g.kind === 'number' && g.source === 'manual' && $('#gc_val') && val('gc_val') !== '') { g.current = num(val('gc_val')); e.value = g.current; }
+    else if (g.kind === 'number') e.value = goalCurrent(g);
+    if (g.kind === 'checklist') document.querySelectorAll('#modalBox [data-step]').forEach(cb => g.steps[+cb.dataset.step].done = cb.checked);
+    (g.log ||= []).push(e);
+    if (achieved) { g.status = 'done'; g.doneAt = TODAY; }
+    closeModal(); toast(achieved ? `★ ${g.title} — achieved!` : 'Check-in saved'); commit();
+  },
+  goalDone(id) { const g = D.lifeGoals.find(x => x.id === id); g.status = 'done'; g.doneAt = TODAY; (g.log ||= []).push({date: TODAY, note: 'Achieved'}); toast(`★ ${g.title} — achieved!`); commit(); },
   person(id) {
     const p = id ? D.people.find(x => x.id === id) : {};
     modal(`<h2>${id ? 'Edit' : 'New'} person</h2><div class="formgrid"><label class="f">Name<input id="pp_name" value="${esc(p.name || '')}"></label><label class="f">Relation<input id="pp_rel" value="${esc(p.relation || '')}" placeholder="friend, mum, cousin…"></label>
@@ -1150,6 +1285,7 @@ function qaParse(s) {
     return {kind: 'task', title, due: last || '', d: `Task “${title}”${last ? ' · due ' + fdl(last) : ''}`};
   }
   if ((m = s.match(/^(want|need|wish)\s+([\d.,]+)\s+(.+)$/i))) { const b = /need/i.test(m[1]) ? 'needs' : 'wants'; return {kind: 'wish', price: num(m[2]), name: m[3], bucket: b, d: `Wishlist (${b}) · ${m[3]} · ${eur(num(m[2]))}`}; }
+  if ((m = s.match(/^goal\s+(.+?)(?:\s+by\s+(\S+))?$/i))) { const due = parseDateWord(m[2]); return {kind: 'goal', title: due || !m[2] ? m[1] : m[1] + ' by ' + m[2], due: due || '', d: `Goal “${due || !m[2] ? m[1] : m[1] + ' by ' + m[2]}”${due ? ' · by ' + fdl(due) : ''} · weekly check-in on Mondays`}; }
   if ((m = s.match(/^note\s+(.+)$/i))) return {kind: 'task', title: m[1], due: '', d: `Note “${m[1]}”`};
   if ((m = s.match(/^([\d.,]+)\s*(.*)$/))) {
     let rest = m[2], src = 'salary';
@@ -1169,13 +1305,14 @@ function quickAdd() {
   modal(`<h2>Quick add</h2><div class="qa"><input id="qa" placeholder="12.50 food lunch" autocomplete="off" oninput="$('#qapv').textContent=(qaParse(this.value)||{d:''}).d" onkeydown="if(event.key==='Enter')qaGo()"><div class="pv" id="qapv"></div>
     <div class="help"><code>24.90 eating out pizza</code> expense · <code>60 hobbies @savings</code> paid from savings · <code>15 food yesterday</code><br>
     <code>task call bank fri</code> · <code>task renew ID 03.12</code> · <code>note gift idea for mum: scarf</code><br>
-    <code>want 89 headphones</code> · <code>need 120 winter boots</code><br><code>bday Ivan 14.03</code> · <code>weight 86.4</code> · <code>waist 98</code> · <code>income 2400</code> · <code>save 200</code></div></div>`);
+    <code>want 89 headphones</code> · <code>need 120 winter boots</code><br><code>goal run a 5k by 01.03.2027</code><br><code>bday Ivan 14.03</code> · <code>weight 86.4</code> · <code>waist 98</code> · <code>income 2400</code> · <code>save 200</code></div></div>`);
 }
 function qaGo() {
   const p = qaParse(val('qa')); if (!p) return; closeModal();
   if (p.kind === 'exp') D.transactions.push({id: uid(), date: p.date, amount: r2(p.amount), category: p.cat, bucket: catBucket(p.cat), note: p.note, source: p.src});
   if (p.kind === 'task') D.tasks.push({id: uid(), title: p.title, due: p.due, done: false});
   if (p.kind === 'weight' || p.kind === 'waist') { const ex = D.body.find(b => b.date === TODAY), k = p.kind; if (ex) ex[k] = p.v; else D.body.push({id: uid(), date: TODAY, weight: k === 'weight' ? p.v : null, waist: k === 'waist' ? p.v : null}); }
+  if (p.kind === 'goal') D.lifeGoals.push({id: uid(), created: TODAY, status: 'active', log: [], title: p.title, category: 'Personal', kind: 'simple', targetDate: p.due, remind: 'weekly', remindDay: 0, steps: []});
   if (p.kind === 'wish') D.wishlist.push({id: uid(), added: TODAY, bought: false, name: p.name, price: r2(p.price), bucket: p.bucket, link: '', note: '', category: p.bucket === 'needs' ? 'Other' : 'Shopping'});
   if (p.kind === 'save') D.savingsMoves.push({id: uid(), date: TODAY, amount: p.v, kind: 'deposit', note: 'Deposit'});
   if (p.kind === 'bday') { const ex = D.people.find(x => x.name.toLowerCase() === p.name.toLowerCase()); if (ex) ex.birthday = p.bd; else D.people.push({id: uid(), name: p.name, birthday: p.bd}); }
@@ -1184,7 +1321,7 @@ function qaGo() {
 }
 
 // ------------------------------------------------------------------ shell
-const CRUMB = {today: 'TODAY', money: 'MONEY', gym: 'GYM', records: 'RECORDS', calendar: 'CALENDAR', settings: 'SETTINGS', help: 'HELP'};
+const CRUMB = {today: 'TODAY', money: 'MONEY', gym: 'GYM', goals: 'GOALS', records: 'RECORDS', calendar: 'CALENDAR', settings: 'SETTINGS', help: 'HELP'};
 function render() {
   document.querySelectorAll('[data-view]').forEach(a => a.classList.toggle('on', a.dataset.view === UI.view));
   const sub = UI.view === 'money' ? ' // ' + ({tx: 'TRANSACTIONS', wish: 'WISHLIST'}[UI.moneyTab] || UI.moneyTab.toUpperCase()) : UI.view === 'gym' ? ' // ' + (UI.gymTab === 'progress' ? 'EXERCISES' : UI.gymTab.toUpperCase()) : '';
@@ -1203,7 +1340,7 @@ $('#modal').onclick = e => { if (e.target.id === 'modal' && !e.target.querySelec
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); quickAdd(); }
   else if (e.key === 'Escape' && !$('#modal .tour')) closeModal();
-  else if (/^[1-7]$/.test(e.key) && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && $('#modal').classList.contains('hidden')) go(Object.keys(CRUMB)[+e.key - 1]);
+  else if (/^[1-8]$/.test(e.key) && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) && $('#modal').classList.contains('hidden')) go(Object.keys(CRUMB)[+e.key - 1]);
 });
 const tip = $('#tip');
 document.addEventListener('mouseover', e => { const t = e.target.closest('[data-tip]'); if (t) { tip.textContent = t.dataset.tip; tip.classList.add('on'); } else tip.classList.remove('on'); });
