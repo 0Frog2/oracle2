@@ -58,7 +58,7 @@ function parseDateWord(w) {
 }
 
 // ------------------------------------------------------------------ data, storage & sync
-const APP_VERSION = '2.2.0', DATA_VERSION = 2;
+const APP_VERSION = '2.3.0', DATA_VERSION = 2;
 const COLLS = ['lifeGoals', 'wishlist', 'people', 'tasks', 'paychecks', 'transactions', 'savingsMoves', 'recurring', 'goals', 'workouts', 'body'];
 let D = null, saveTimer = null, SNAP = {}, SYNC = null, NOTIFIED = {};
 const UI = {view: 'today', moneyTab: 'overview', gymTab: 'overview', recTab: 'people', calMonth: TODAY.slice(0, 7), calSel: TODAY, gymEx: null, txFilter: 'period', search: '', importPreview: null, sync: {state: 'off', msg: ''}};
@@ -556,7 +556,7 @@ V.today = () => {
   const up = [];
   for (const pp of D.people) { const nb = nextBirthday(pp.birthday); if (nb && diff(TODAY, nb) <= Math.max(lead, 14)) up.push({d: nb, g: '✦', c: 'var(--extra)', t: `${pp.name}'s birthday`, s: pp.gifts ? 'gift ideas: ' + pp.gifts : ''}); }
   for (const o of billOccurrences(TODAY, addDays(TODAY, Math.max(lead, 14)))) if (!o.paid) up.push({d: o.date, g: '▲', c: 'var(--warn)', t: `${o.r.name}`, s: eur(o.r.amount), bill: o});
-  for (const t of D.tasks) if (!t.done && t.due && t.due <= addDays(TODAY, 14)) up.push({d: t.due, g: '□', c: t.due < TODAY ? 'var(--bad)' : 'var(--text)', t: t.title, s: t.due < TODAY ? 'overdue' : '', task: t});
+  for (const t of D.tasks) if (!t.done && t.due && t.due <= addDays(TODAY, Math.max(14, +t.remindBefore || 0))) up.push({d: t.due, g: '□', c: t.due < TODAY ? 'var(--bad)' : 'var(--text)', t: t.title, s: t.due < TODAY ? 'overdue' : '', task: t});
   up.sort((a, b) => a.d < b.d ? -1 : 1);
   for (const g of D.lifeGoals) if (g.status === 'active' && g.targetDate && g.targetDate >= TODAY && diff(TODAY, g.targetDate) <= Math.max(lead, 14)) up.push({d: g.targetDate, g: '◎', c: 'var(--wants)', t: `Goal: ${g.title}`, s: `${Math.round(goalProgress(g) * 100)}% done`});
   up.sort((a, b) => a.d < b.d ? -1 : 1);
@@ -576,7 +576,9 @@ V.today = () => {
   const body = `<div class="card"><h3>Weight · 90 days <span class="act"><button class="btn sm" onclick="A.bodyLog()">+ Log</button></span></h3>${bw.length ? lineChart([{points: bw, color: 'var(--accent)'}], {h: 190, W: 440, fmt: v => v.toFixed(1), band: goalBand(), unit: ' kg'}) : '<div class="empty">Log your weight to see the trend</div>'}</div>`;
   const rv = periodsToReview(), rvP = rv[0];
   const reviewCard = rvP ? `<div class="card briefing" style="margin-bottom:16px"><div class="row wrap"><div><div class="acc">▸ Pay period ${fd(rvP.start)} – ${fd(rvP.end)} has ended</div><div class="small muted">Check the leftover and decide how much goes to savings${rv.length > 1 ? ` · ${rv.length} periods waiting` : ''}.</div></div><span class="sp"></span><button class="btn pri" onclick="A.review('${rvP.pc.id}')">Review leftover</button></div></div>` : '';
-  return `${reviewCard}<div class="grid g4">${tiles}</div><div class="mt">${briefing}</div><div class="grid g21 mt">${upcoming}<div class="grid">${goalsCard}${buckets}${body}</div></div>`;
+  const rvm = ymAdd(TODAY.slice(0, 7), -1), hasData = D.transactions.some(t => t.date.startsWith(rvm)) || D.workouts.some(w => w.date.startsWith(rvm));
+  const monthCard = +TODAY.slice(8) <= 10 && hasData ? `<div class="card" style="margin-bottom:16px"><div class="row wrap"><div><div class="acc">▸ Your ${MONTH_FULL[+rvm.slice(5) - 1]} review is ready</div><div class="small muted">Money, gym records, body, goals — and what's coming this month.</div></div><span class="sp"></span><button class="btn pri" onclick="openReview('${rvm}')">Open review</button></div></div>` : '';
+  return `${reviewCard}${monthCard}<div class="grid g4">${tiles}</div><div class="mt">${briefing}</div><div class="grid g21 mt">${upcoming}<div class="grid">${goalsCard}${buckets}${body}</div></div>`;
 };
 
 // ---------------- money
@@ -785,9 +787,11 @@ V.records = () => {
   } else {
     const ts = D.tasks.filter(t => !q || JSON.stringify(t).toLowerCase().includes(q));
     const open = ts.filter(t => !t.done).sort((a, b) => (a.due || '9') < (b.due || '9') ? -1 : 1), done = ts.filter(t => t.done).sort((a, b) => (a.doneAt || '') < (b.doneAt || '') ? 1 : -1);
-    const row = t => `<div class="li"><input type="checkbox" ${t.done ? 'checked' : ''} onchange="A.toggleTask('${t.id}')"><span class="t ${t.done ? 'faint' : ''}" style="${t.done ? 'text-decoration:line-through' : ''}">${esc(t.title)}${t.notes ? ` <span class="muted small">— ${esc(t.notes)}</span>` : ''}</span>
-      ${t.due ? `<span class="small ${!t.done && t.due < TODAY ? 'bad' : 'muted'}">${fdl(t.due)}</span>` : '<span class="tag">note</span>'}<button class="btn sm ghost" onclick="A.task('${t.id}')">edit</button></div>`;
-    body = `<div class="grid g21"><div class="card"><h3>Open · ${open.length}</h3><div class="list">${open.map(row).join('') || '<div class="empty">All clear</div>'}</div></div>
+    const row = t => `<div class="li wrow"><input type="checkbox" ${t.done ? 'checked' : ''} onchange="A.toggleTask('${t.id}')"><span class="t ${t.done ? 'faint' : ''}" style="${t.done ? 'text-decoration:line-through' : ''}">${esc(t.title)}${t.notes ? ` <span class="muted small">— ${esc(t.notes)}</span>` : ''}</span>
+      ${t.repeat ? `<span class="tag" title="${esc(repeatText(t))}">↻ ${esc(repeatText(t).replace('every ', ''))}</span>` : ''}${t.due ? `<span class="small ${!t.done && t.due < TODAY ? 'bad' : 'muted'}">${fdl(t.due)}${t.due.slice(0, 4) !== TODAY.slice(0, 4) ? ' ' + t.due.slice(0, 4) : ''}</span>` : '<span class="tag">note</span>'}<button class="btn sm ghost" onclick="A.task('${t.id}')">edit</button></div>`;
+    const rec = open.filter(t => t.repeat || t.remindBefore), once = open.filter(t => !t.repeat && !t.remindBefore);
+    body = `<div class="grid g21"><div class="grid" style="align-content:start"><div class="card"><h3>Open · ${once.length}</h3><div class="list">${once.map(row).join('') || '<div class="empty">All clear</div>'}</div></div>
+      <div class="card"><h3>Recurring & renewals · ${rec.length} <span class="act"><button class="btn sm" onclick="A.task(null,'',{repeat:{n:1,unit:'year'},remindBefore:30})">+ Renewal</button></span></h3><div class="list">${rec.map(row).join('') || '<div class="empty small">Insurance, vignette, ID card, check-ups… add them once and get warned ahead every time.</div>'}</div></div></div>
       <div class="card"><h3>Done · ${done.length}</h3><div class="list">${done.slice(0, 15).map(row).join('') || '<div class="empty">—</div>'}</div></div></div>`;
   }
   return `<div class="row"><div class="tabs" style="flex:1">${tabs.map(([k, l]) => `<a class="${UI.recTab === k ? 'on' : ''}" onclick="UI.recTab='${k}';render()">${l}</a>`).join('')}</div>
@@ -854,6 +858,94 @@ V.goals = () => {
   ${list.length ? `<div class="grid g3 goals-grid">${list.map(goalCard).join('')}</div>` : `<div class="card"><div class="empty">${f === 'done' ? 'Nothing achieved yet — you\'ll get there.' : 'No goals yet. Add one — e.g. "Reach 80 kg", "Run a 5k", "Learn Blender sculpting" — and pick how often to be reminded.'}</div></div>`}`;
 };
 
+// ---------------- monthly review
+const MONTH_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const ymName = ym => `${MONTH_FULL[+ym.slice(5) - 1]} ${ym.slice(0, 4)}`;
+const ymAdd = (ym, n) => { const d = new Date(+ym.slice(0, 4), +ym.slice(5) - 1 + n, 1); return iso(d).slice(0, 7); };
+function monthStats(ym) {
+  const inM = d => (d || '').startsWith(ym), start = ym + '-01';
+  const tx = D.transactions.filter(t => inM(t.date));
+  const spent = sum(tx, t => t.amount), byB = {needs: 0, wants: 0, savings: 0}; for (const t of tx) byB[t.bucket] = (byB[t.bucket] || 0) + t.amount;
+  const cats = {}; for (const t of tx) cats[t.category] = (cats[t.category] || 0) + t.amount;
+  const income = sum(D.paychecks.filter(p => inM(p.date)), p => p.amount);
+  const saved = sum(D.savingsMoves.filter(m => inM(m.date)), m => m.kind === 'withdraw' ? -m.amount : m.amount) - sum(tx.filter(t => t.source === 'savings'), t => t.amount);
+  const fromSavings = sum(tx.filter(t => t.source === 'savings'), t => t.amount);
+  const bills = tx.filter(t => t.recurringId);
+  const bought = D.wishlist.filter(w => w.bought && inM(w.boughtAt));
+  const ws = D.workouts.filter(w => inM(w.date));
+  const sets = {}; for (const w of ws) for (const e of w.exercises) sets[muscleOf(e.name)] = (sets[muscleOf(e.name)] || 0) + e.sets.filter(s => !s.warm).length;
+  const prs = [];
+  for (const n of new Set(ws.flatMap(w => w.exercises.map(e => e.name)))) {
+    const h = exerciseHistory(n), before = h.filter(x => x.date < start && x.e1rm > 0), during = h.filter(x => inM(x.date));
+    if (!before.length) continue;
+    const pb = Math.max(...before.map(x => x.e1rm)), best = during.reduce((b, x) => x.e1rm > b.e1rm ? x : b, {e1rm: 0});
+    if (best.e1rm > pb) prs.push({n, from: pb, to: best.e1rm, top: best.top, reps: best.reps});
+  }
+  prs.sort((a, b) => (b.to / b.from) - (a.to / a.from));
+  const bodyM = k => D.body.filter(b => b[k] && inM(b.date)).sort((a, b) => a.date < b.date ? -1 : 1);
+  const wt = bodyM('weight'), wa = bodyM('waist');
+  const goalsDone = D.lifeGoals.filter(g => inM(g.doneAt)), checkins = sum(D.lifeGoals, g => (g.log || []).filter(l => inM(l.date)).length);
+  const tasksDone = D.tasks.filter(t => inM(t.doneAt)).length + sum(D.tasks, t => (t.history || []).filter(inM).length);
+  return {ym, spent, byB, cats, income, saved, fromSavings, bills, bought, ws, vol: sum(ws, wVol), nsets: sum(ws, wSets), sets, prs, wt, wa, goalsDone, checkins, tasksDone};
+}
+function delta(cur, prev, fmt, lowerIsGood) {
+  if (!prev) return '';
+  const d = cur - prev; if (Math.abs(d) < 1e-9) return '<span class="muted">same as last month</span>';
+  const good = lowerIsGood ? d < 0 : d > 0;
+  return `<span class="${good ? 'good' : 'warn'}">${d > 0 ? '▲' : '▼'} ${fmt(Math.abs(d))}</span> <span class="faint">vs last month</span>`;
+}
+V.review = () => {
+  const ym = UI.revMonth || defaultReviewMonth(), S = monthStats(ym), P = monthStats(ymAdd(ym, -1)), next = ymAdd(ym, 1);
+  const wch = S.wt.length > 1 ? S.wt[S.wt.length - 1].weight - S.wt[0].weight : null, wach = S.wa.length > 1 ? S.wa[S.wa.length - 1].waist - S.wa[0].waist : null;
+  const cats = Object.entries(S.cats).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  const groups = Object.entries(S.sets).filter(([g]) => g !== 'Other').sort((a, b) => b[1] - a[1]);
+  const weeks = Math.max(1, daysIn(+ym.slice(0, 4), +ym.slice(5)) / 7);
+  // next month preview
+  const nextFrom = next + '-01', nextTo = next + '-' + pad(daysIn(+next.slice(0, 4), +next.slice(5)));
+  const nBills = billOccurrences(nextFrom, nextTo), nB = D.people.filter(p => (p.birthday || '').slice(-5, -3) === next.slice(5));
+  const nGoals = D.lifeGoals.filter(g => g.status === 'active' && (g.targetDate || '').startsWith(next)), nTasks = D.tasks.filter(t => !t.done && (t.due || '').startsWith(next));
+  const highlights = [];
+  if (S.prs.length) highlights.push(`${S.prs.length} new strength record${S.prs.length > 1 ? 's' : ''}`);
+  if (S.goalsDone.length) highlights.push(`${S.goalsDone.length} goal${S.goalsDone.length > 1 ? 's' : ''} achieved`);
+  if (S.saved > 0) highlights.push(`${eur0(S.saved)} saved`);
+  if (wch !== null && wch < 0) highlights.push(`${Math.abs(wch).toFixed(1)} kg down`);
+  if (wach !== null && wach < 0) highlights.push(`${Math.abs(wach).toFixed(1)} cm off the waist`);
+  return `<div class="row" style="margin-bottom:16px"><button class="btn" onclick="UI.revMonth='${ymAdd(ym, -1)}';render()">‹</button><div style="font-size:18px;min-width:200px;text-align:center">${ymName(ym)}</div><button class="btn" onclick="UI.revMonth='${ymAdd(ym, 1)}';render()" ${ym >= TODAY.slice(0, 7) ? 'disabled' : ''}>›</button><span class="sp"></span><span class="small muted">${ym === TODAY.slice(0, 7) ? 'month so far' : 'monthly review'}</span></div>
+  ${highlights.length ? `<div class="card briefing" style="margin-bottom:16px"><div class="acc">▸ Highlights</div><div style="margin-top:6px">${highlights.map(esc).join(' · ')}</div></div>` : ''}
+  <div class="grid g4">
+    <div class="card stat"><div class="lbl">Spent</div><div class="val">${eur0(S.spent)}</div><div class="sub">${delta(S.spent, P.spent, eur0, true)}</div></div>
+    <div class="card stat"><div class="lbl">Saved</div><div class="val ${S.saved < 0 ? 'bad' : ''}">${eur0(S.saved)}</div><div class="sub">${S.income ? `income ${eur0(S.income)}` : ''}${S.fromSavings ? ` · ${eur0(S.fromSavings)} spent from savings` : ''}</div></div>
+    <div class="card stat"><div class="lbl">Workouts</div><div class="val">${S.ws.length}</div><div class="sub">${delta(S.ws.length, P.ws.length, v => v, false) || `${(S.ws.length / weeks).toFixed(1)} per week`}</div></div>
+    <div class="card stat"><div class="lbl">Body</div><div class="val">${wch === null ? '—' : `${wch > 0 ? '+' : ''}${wch.toFixed(1)} kg`}</div><div class="sub">${wach === null ? (S.wt.length ? `${S.wt[S.wt.length - 1].weight} kg latest` : 'no weigh-ins this month') : `waist ${wach > 0 ? '+' : ''}${wach.toFixed(1)} cm`}</div></div></div>
+  <div class="grid g2 mt"><div class="card"><h3>Money</h3>
+      ${hbars(['needs', 'wants', 'savings'].map(k => ({label: k[0].toUpperCase() + k.slice(1), value: S.byB[k] || 0, color: PAL[k], right: eur(S.byB[k] || 0)})))}
+      <h3 class="mt" style="margin-top:18px">Top categories</h3>${cats.length ? hbars(cats.map(([c, v]) => ({label: c, value: v, color: PAL[catBucket(c)], right: `${eur(v)} <span class="faint">${Math.round(v / S.spent * 100)}%</span>`}))) : '<div class="empty">No spending logged</div>'}
+      <div class="small muted mt">${S.bills.length} bills/subscriptions paid (${eur(sum(S.bills, t => t.amount))})${S.bought.length ? ` · bought from wishlist: ${S.bought.map(w => esc(w.name)).join(', ')}` : ''}</div></div>
+    <div class="card"><h3>Gym</h3><div class="small muted">${S.nsets} sets · ${Math.round(S.vol).toLocaleString()} kg volume ${delta(S.vol, P.vol, v => Math.round(v).toLocaleString() + ' kg', false)}</div>
+      <h3 class="mt" style="margin-top:14px">New records</h3>${S.prs.length ? `<div class="list">${S.prs.slice(0, 6).map(p => `<div class="li small"><span class="good">↑</span><span class="t" style="white-space:normal">${esc(p.n)}</span><span class="muted">${p.top} kg × ${p.reps}</span><span class="good">+${Math.round((p.to / p.from - 1) * 100)}%</span></div>`).join('')}</div>` : '<div class="small muted">No new records this month.</div>'}
+      <h3 class="mt" style="margin-top:14px">Hard sets per week</h3>${groups.length ? hbars(groups.map(([g, n]) => ({label: g, value: n / weeks, right: (n / weeks).toFixed(1), color: n / weeks >= 10 ? 'var(--accent)' : '#3a3a44'})), {ref: 10}) : '<div class="small muted">No workouts.</div>'}</div></div>
+  <div class="grid g2 mt"><div class="card"><h3>Goals & tasks</h3>
+      <div class="small" style="line-height:1.9">${S.goalsDone.length ? S.goalsDone.map(g => `<span class="good">★</span> ${esc(g.title)}`).join('<br>') + '<br>' : ''}<span class="muted">${S.checkins} goal check-ins · ${S.tasksDone} tasks done</span></div>
+      ${D.lifeGoals.filter(g => g.status === 'active').slice(0, 5).map(g => { const pc = Math.round(goalProgress(g) * 100); return `<div style="margin:8px 0"><div class="row small"><span class="t" style="flex:1">${esc(g.title)}</span><span class="muted">${pc}%</span></div><div class="meter" style="height:5px;margin-top:4px"><i style="width:${pc}%;background:var(--accent)"></i></div></div>`; }).join('')}</div>
+    <div class="card"><h3>Coming up in ${MONTH_FULL[+next.slice(5) - 1]}</h3><div class="small" style="line-height:1.9">
+      <span style="color:var(--warn)">▲</span> ${nBills.length} bills & subscriptions · ${eur(sum(nBills, o => o.r.amount))}<br>
+      <span style="color:var(--extra)">✦</span> ${nB.length ? nB.map(p => `${esc(p.name)} (${+p.birthday.slice(-2)} ${MON[+next.slice(5) - 1]})`).join(', ') : 'no birthdays'}<br>
+      ${nTasks.length ? `<span>□</span> ${nTasks.map(t => esc(t.title)).join(', ')}<br>` : ''}${nGoals.length ? `<span style="color:var(--wants)">◎</span> deadlines: ${nGoals.map(g => esc(g.title)).join(', ')}` : ''}</div></div></div>`;
+};
+function defaultReviewMonth() { return +TODAY.slice(8) <= 10 ? ymAdd(TODAY.slice(0, 7), -1) : TODAY.slice(0, 7); }
+function openReview(ym) { UI.revMonth = ym || defaultReviewMonth(); go('review'); }
+
+// ---------------- recurring tasks & renewals
+const REPEAT_UNITS = {day: 'day', week: 'week', month: 'month', year: 'year'};
+function addPeriod(date, n, unit) {
+  const d = pd(date);
+  if (unit === 'day') d.setDate(d.getDate() + n); else if (unit === 'week') d.setDate(d.getDate() + 7 * n);
+  else { const day = d.getDate(); d.setDate(1); d.setMonth(d.getMonth() + (unit === 'year' ? 12 * n : n)); d.setDate(Math.min(day, daysIn(d.getFullYear(), d.getMonth() + 1))); }
+  return iso(d);
+}
+const repeatText = t => t.repeat ? `every ${t.repeat.n > 1 ? t.repeat.n + ' ' : ''}${t.repeat.unit}${t.repeat.n > 1 ? 's' : ''}` : '';
+const remindText2 = d => !d ? 'on the day' : d % 30 === 0 ? `${d / 30} month${d > 30 ? 's' : ''} before` : d % 7 === 0 ? `${d / 7} week${d > 7 ? 's' : ''} before` : `${d} day${d > 1 ? 's' : ''} before`;
+
 // ---------------- calendar
 V.calendar = () => {
   const [y, m] = UI.calMonth.split('-').map(Number), first = `${UI.calMonth}-01`, start = monday(first);
@@ -865,7 +957,7 @@ V.calendar = () => {
   const mt = monthEv.filter(x => x.d.slice(0, 7) === UI.calMonth);
   const spentM = sum(mt.flatMap(x => x.ev.filter(e => e.k === 'spend')), e => e.amt), gymM = mt.filter(x => x.ev.some(e => e.k === 'gym')).length;
   return `<div class="row" style="margin-bottom:16px"><button class="btn" onclick="_calMove(-1)">‹</button><div style="font-size:18px;min-width:180px;text-align:center">${MON[m - 1]} ${y}</div><button class="btn" onclick="_calMove(1)">›</button>
-      <button class="btn ghost" onclick="UI.calMonth=TODAY.slice(0,7);UI.calSel=TODAY;render()">Today</button><span class="sp"></span>
+      <button class="btn ghost" onclick="UI.calMonth=TODAY.slice(0,7);UI.calSel=TODAY;render()">Today</button><button class="btn ghost" onclick="openReview('${UI.calMonth}')">Month review</button><span class="sp"></span>
       <span class="small muted">${gymM} gym days · ${eur(spentM)} spent</span></div>
     <div class="grid" style="grid-template-columns:1fr 300px;align-items:start"><div>
       <div class="cal" style="margin-bottom:6px">${DOW.map(d => `<div class="dh">${d.toUpperCase()}</div>`).join('')}</div>
@@ -931,6 +1023,8 @@ const HELP = [
     <p>Gym shows workouts per week, sets per muscle group (aim for 10–20 hard sets a week per muscle), strength progress per exercise (estimated 1-rep max), personal records and tips under <i>Where to improve</i>. Log weight and waist regularly (morning, same conditions) to see real trends; set a goal weight in Settings.</p>`],
   ['Goals', `<p>Goals are for anything you want to achieve — fitness, learning, career, personal. Each goal can be measured three ways: <b>done / not done</b>, a list of <b>steps</b> you tick off, or <b>a number</b> from a start to a target (e.g. 87 → 80 kg). Number goals can update themselves from your <b>weight</b> or <b>waist</b> log or your <b>savings</b> balance.</p>
     <p>Pick how often you want to be reminded — daily, weekly on a day you choose, or monthly. On that day the goal is highlighted, shows on Today, and you get a notification. <b>Check in</b> to update progress and write a short note on how it's going; your notes build a history you can look back on. Add a target date to see the countdown and get a reminder before the deadline. When you're there, press <b>★ Achieved</b>.</p>`],
+  ['Monthly review', `<p>At the start of each month, <b>Today</b> shows a card: <i>Your October review is ready</i> (you also get a notification on the 1st). The review shows what you spent and saved compared with the month before, your top spending categories, new strength records, workouts and sets per muscle, weight and waist change, goals achieved and check-ins — and what's coming next month (bills, birthdays, deadlines). Open any month from Calendar → <b>Month review</b> and use ‹ › to go back in time.</p>`],
+  ['Recurring tasks & renewals', `<p>For things that come back — car insurance, vignette, ID card or passport expiry, annual check-ups, filter changes — add a task with a <b>repeat</b> (every N days, weeks, months or years) and choose how early to be <b>reminded</b> (up to 3 months before). They're listed under Records → Tasks → <i>Recurring & renewals</i>. Ticking one off logs it and moves it to the next date automatically. Quick add: <code>task car insurance every year 03.12</code>.</p>`],
   ['Calendar, records & reminders', `<p>The <b>Calendar</b> shows everything per day: ◆ workouts, − spending, + income, ▲ bills due, ✓ bills paid, ✦ birthdays, □ tasks, ◎ goal deadlines, ★ goals achieved. Tap a day for the details.</p>
     <p><b>Records</b> holds people (birthday, relation, gift ideas) and tasks & notes.</p>
     <p><b>Reminders</b>: birthdays and bills at least 7 days ahead (change in Settings), the day before and on the day; a weekly summary every Monday. Turn on notifications in Settings. On Android and desktop they also arrive while the app is closed (checked a few times a day); on iPhone they show when you open the app.</p>`],
@@ -1201,13 +1295,29 @@ const A = {
     const p = {name: val('pp_name'), relation: val('pp_rel'), birthday: bd, gifts: val('pp_gift'), notes: val('pp_notes')}; if (!p.name) return toast('Name needed');
     if (id) Object.assign(D.people.find(x => x.id === id), p); else D.people.push({id: uid(), ...p}); closeModal(); commit();
   },
-  task(id, date) {
-    const t = id ? D.tasks.find(x => x.id === id) : {due: date || ''};
-    modal(`<h2>${id ? 'Edit' : 'New'} task / note</h2><div class="formgrid"><label class="f full">Title<input id="tk_t" value="${esc(t.title || '')}"></label><label class="f">Due date (empty = note)<input type="date" id="tk_d" value="${t.due || ''}"></label><label class="f full">Details<input id="tk_n" value="${esc(t.notes || '')}"></label></div>
+  task(id, date, preset) {
+    const t = id ? D.tasks.find(x => x.id === id) : {due: date || '', ...(preset || {})};
+    const rp = t.repeat || {n: 1, unit: ''};
+    modal(`<h2>${id ? 'Edit' : 'New'} ${t.repeat || t.remindBefore ? 'recurring task / renewal' : 'task / note'}</h2><div class="formgrid"><label class="f full">Title<input id="tk_t" value="${esc(t.title || '')}" placeholder="Car insurance, ID card expires, dentist check-up…"></label>
+      <label class="f">Due / expiry date (empty = note)<input type="date" id="tk_d" value="${t.due || ''}"></label>
+      <label class="f">Remind me<select id="tk_rb">${[[0, 'On the day'], [1, '1 day before'], [3, '3 days before'], [7, '1 week before'], [14, '2 weeks before'], [30, '1 month before'], [60, '2 months before'], [90, '3 months before']].map(([v, l]) => `<option value="${v}" ${(+t.remindBefore || 0) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="f">Repeats every<input type="number" inputmode="numeric" min="1" id="tk_rn" value="${rp.n || 1}"></label>
+      <label class="f">&nbsp;<select id="tk_ru"><option value="" ${!rp.unit ? 'selected' : ''}>doesn't repeat</option>${Object.keys(REPEAT_UNITS).map(u => `<option value="${u}" ${rp.unit === u ? 'selected' : ''}>${u}(s)</option>`).join('')}</select></label>
+      <label class="f full">Details<input id="tk_n" value="${esc(t.notes || '')}" placeholder="policy provider, where the document is kept…"></label></div>
+      ${(t.history || []).length ? `<div class="small faint mt">Done before: ${t.history.slice(-6).reverse().map(fd).join(', ')}</div>` : ''}
       <div class="row mt">${id ? `<button class="btn ghost danger" onclick="A.del('tasks','${id}');closeModal()">Delete</button>` : ''}<span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.taskSave('${id || ''}')">Save</button></div>`);
   },
-  taskSave(id) { const t = {title: val('tk_t'), due: val('tk_d'), notes: val('tk_n')}; if (!t.title) return; if (id) Object.assign(D.tasks.find(x => x.id === id), t); else D.tasks.push({id: uid(), done: false, ...t}); closeModal(); commit(); },
-  toggleTask(id) { const t = D.tasks.find(x => x.id === id); t.done = !t.done; t.doneAt = t.done ? TODAY : null; commit(); },
+  taskSave(id) { const u = val('tk_ru'), t = {title: val('tk_t'), due: val('tk_d'), notes: val('tk_n'), remindBefore: +val('tk_rb') || 0, repeat: u ? {n: Math.max(1, parseInt(val('tk_rn')) || 1), unit: u} : null}; if (!t.title) return;
+    if (t.repeat && !t.due) return toast('A repeating task needs a first due date'); if (id) Object.assign(D.tasks.find(x => x.id === id), t); else D.tasks.push({id: uid(), done: false, ...t}); closeModal(); commit(); },
+  toggleTask(id) {
+    const t = D.tasks.find(x => x.id === id);
+    if (t.repeat && t.due && !t.done) { // repeating: log it and move to the next date instead of finishing
+      (t.history ||= []).push(TODAY);
+      let n = addPeriod(t.due, t.repeat.n, t.repeat.unit); while (n <= TODAY) n = addPeriod(n, t.repeat.n, t.repeat.unit);
+      t.due = n; toast(`Done · next: ${fdl(n)} ${n.slice(0, 4)}`); return commit();
+    }
+    t.done = !t.done; t.doneAt = t.done ? TODAY : null; commit();
+  },
   bodyLog() {
     const last = [...D.body].sort((a, b) => a.date < b.date ? -1 : 1).pop() || {};
     modal(`<h2>Body log</h2><div class="formgrid"><label class="f">Weight (kg)<input type="number" step="0.1" id="bd_w" placeholder="${last.weight || ''}"></label><label class="f">Waist (cm) — at the navel<input type="number" step="0.1" id="bd_ws" placeholder="${last.waist || ''}"></label><label class="f">Date<input type="date" id="bd_d" value="${TODAY}"></label></div>
@@ -1280,9 +1390,12 @@ function qaParse(s) {
     return {kind: 'bday', name: m[1], bd, d: `${m[1]} · birthday ${bd.replace(/^--/, '')}`};
   }
   if ((m = s.match(/^(?:task|todo|t)\s+(.+)$/i))) {
-    const words = m[1].split(/\s+/), last = parseDateWord(words[words.length - 1]);
-    const title = last ? words.slice(0, -1).join(' ') : m[1];
-    return {kind: 'task', title, due: last || '', d: `Task “${title}”${last ? ' · due ' + fdl(last) : ''}`};
+    let body = m[1], repeat = null; const rm = body.match(/\s+every\s+(\d+\s+)?(day|week|month|year)s?\b/i);
+    if (rm) { repeat = {n: parseInt(rm[1]) || 1, unit: rm[2].toLowerCase()}; body = body.replace(rm[0], ''); }
+    const words = body.split(/\s+/), last = parseDateWord(words[words.length - 1]);
+    const title = last ? words.slice(0, -1).join(' ') : body;
+    const due = last || (repeat ? TODAY : '');
+    return {kind: 'task', title, due, repeat, d: `Task “${title}”${due ? ' · due ' + fdl(due) : ''}${repeat ? ' · repeats ' + repeatText({repeat}) : ''}`};
   }
   if ((m = s.match(/^(want|need|wish)\s+([\d.,]+)\s+(.+)$/i))) { const b = /need/i.test(m[1]) ? 'needs' : 'wants'; return {kind: 'wish', price: num(m[2]), name: m[3], bucket: b, d: `Wishlist (${b}) · ${m[3]} · ${eur(num(m[2]))}`}; }
   if ((m = s.match(/^goal\s+(.+?)(?:\s+by\s+(\S+))?$/i))) { const due = parseDateWord(m[2]); return {kind: 'goal', title: due || !m[2] ? m[1] : m[1] + ' by ' + m[2], due: due || '', d: `Goal “${due || !m[2] ? m[1] : m[1] + ' by ' + m[2]}”${due ? ' · by ' + fdl(due) : ''} · weekly check-in on Mondays`}; }
@@ -1304,13 +1417,13 @@ function qaParse(s) {
 function quickAdd() {
   modal(`<h2>Quick add</h2><div class="qa"><input id="qa" placeholder="12.50 food lunch" autocomplete="off" oninput="$('#qapv').textContent=(qaParse(this.value)||{d:''}).d" onkeydown="if(event.key==='Enter')qaGo()"><div class="pv" id="qapv"></div>
     <div class="help"><code>24.90 eating out pizza</code> expense · <code>60 hobbies @savings</code> paid from savings · <code>15 food yesterday</code><br>
-    <code>task call bank fri</code> · <code>task renew ID 03.12</code> · <code>note gift idea for mum: scarf</code><br>
+    <code>task call bank fri</code> · <code>task car insurance every year 03.12</code> · <code>note gift idea for mum: scarf</code><br>
     <code>want 89 headphones</code> · <code>need 120 winter boots</code><br><code>goal run a 5k by 01.03.2027</code><br><code>bday Ivan 14.03</code> · <code>weight 86.4</code> · <code>waist 98</code> · <code>income 2400</code> · <code>save 200</code></div></div>`);
 }
 function qaGo() {
   const p = qaParse(val('qa')); if (!p) return; closeModal();
   if (p.kind === 'exp') D.transactions.push({id: uid(), date: p.date, amount: r2(p.amount), category: p.cat, bucket: catBucket(p.cat), note: p.note, source: p.src});
-  if (p.kind === 'task') D.tasks.push({id: uid(), title: p.title, due: p.due, done: false});
+  if (p.kind === 'task') D.tasks.push({id: uid(), title: p.title, due: p.due, done: false, repeat: p.repeat || null, remindBefore: p.repeat ? 7 : 0});
   if (p.kind === 'weight' || p.kind === 'waist') { const ex = D.body.find(b => b.date === TODAY), k = p.kind; if (ex) ex[k] = p.v; else D.body.push({id: uid(), date: TODAY, weight: k === 'weight' ? p.v : null, waist: k === 'waist' ? p.v : null}); }
   if (p.kind === 'goal') D.lifeGoals.push({id: uid(), created: TODAY, status: 'active', log: [], title: p.title, category: 'Personal', kind: 'simple', targetDate: p.due, remind: 'weekly', remindDay: 0, steps: []});
   if (p.kind === 'wish') D.wishlist.push({id: uid(), added: TODAY, bought: false, name: p.name, price: r2(p.price), bucket: p.bucket, link: '', note: '', category: p.bucket === 'needs' ? 'Other' : 'Shopping'});
@@ -1321,7 +1434,7 @@ function qaGo() {
 }
 
 // ------------------------------------------------------------------ shell
-const CRUMB = {today: 'TODAY', money: 'MONEY', gym: 'GYM', goals: 'GOALS', records: 'RECORDS', calendar: 'CALENDAR', settings: 'SETTINGS', help: 'HELP'};
+const CRUMB = {today: 'TODAY', money: 'MONEY', gym: 'GYM', goals: 'GOALS', records: 'RECORDS', calendar: 'CALENDAR', settings: 'SETTINGS', help: 'HELP', review: 'MONTH REVIEW'};
 function render() {
   document.querySelectorAll('[data-view]').forEach(a => a.classList.toggle('on', a.dataset.view === UI.view));
   const sub = UI.view === 'money' ? ' // ' + ({tx: 'TRANSACTIONS', wish: 'WISHLIST'}[UI.moneyTab] || UI.moneyTab.toUpperCase()) : UI.view === 'gym' ? ' // ' + (UI.gymTab === 'progress' ? 'EXERCISES' : UI.gymTab.toUpperCase()) : '';

@@ -40,7 +40,13 @@ function computeReminders(D, today) {
     if (due && !checked) out.push({key: `goal:${g.id}:${today}`, title: `Goal check-in: ${g.title}`, body: g.why || (g.targetDate ? `${diff(today, g.targetDate)} days to your deadline` : 'How is it going? Tap to update your progress.')});
     if (g.targetDate) { const d = diff(today, g.targetDate); if (d === lead || d === 1 || d === 0) out.push({key: `goaldl:${g.id}:${d}`, title: `Goal deadline ${when(d)}: ${g.title}`, body: nice(g.targetDate)}); }
   }
-  for (const t of D.tasks || []) if (!t.done && t.due === today) out.push({key: `task:${t.id}:${today}`, title: 'Due today', body: t.title});
+  for (const t of D.tasks || []) {
+    if (t.done || !t.due) continue;
+    const d = diff(today, t.due), rb = +t.remindBefore || 0;
+    if (d === 0) out.push({key: `task:${t.id}:${t.due}:0`, title: 'Due today', body: t.title});
+    else if (rb && (d === rb || (rb >= 7 && d === 1))) out.push({key: `task:${t.id}:${t.due}:${d}`, title: `${t.title} ${when(d)}`, body: nice(t.due) + (t.notes ? ` · ${t.notes}` : '')});
+  }
+  if (today.slice(8) === '01') { const p = pd(today); p.setMonth(p.getMonth() - 1); out.push({key: `review:${today.slice(0, 7)}`, title: `Your ${p.toLocaleString('en', {month: 'long'})} review is ready`, body: 'Spending, savings, gym records, body and goals — open Oracle 2.'}); }
   return out;
 }
 if (typeof self !== 'undefined') self.computeReminders = computeReminders;
