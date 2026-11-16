@@ -60,7 +60,7 @@ function parseDateWord(w) {
 }
 
 // ------------------------------------------------------------------ data, storage & sync
-const APP_VERSION = '2.4.0', DATA_VERSION = 2;
+const APP_VERSION = '2.4.1', DATA_VERSION = 2;
 const COLLS = ['lifeGoals', 'wishlist', 'people', 'tasks', 'paychecks', 'transactions', 'savingsMoves', 'recurring', 'goals', 'workouts', 'body'];
 let D = null, saveTimer = null, SNAP = {}, SYNC = null, NOTIFIED = {};
 const UI = {view: 'today', moneyTab: 'overview', gymTab: 'overview', recTab: 'people', calMonth: TODAY.slice(0, 7), calSel: TODAY, gymEx: null, txFilter: 'period', search: '', importPreview: null, sync: {state: 'off', msg: ''}};
@@ -649,21 +649,22 @@ V.money_wish = () => {
     if (w.price <= bal) return ['warn', 'savings only'];
     return ['bad', 'not yet'];
   };
-  const linkOf = w => /^https?:\/\//i.test(w.link || '') ? `<a class="acc small" href="${esc(w.link)}" target="_blank" rel="noopener">store ↗</a>` : '';
-  const row = w => { const [c, t] = fit(w); return `<div class="li wrow"><input type="checkbox" onchange="A.wishBuy('${w.id}')" title="Mark as bought">
-    <span class="t">${esc(w.name)} ${linkOf(w)}${w.note ? ` <span class="muted small">— ${esc(w.note)}</span>` : ''}</span>
-    <span class="tag ${w.bucket}">${w.bucket}</span><span class="small fit ${c}" style="width:150px;text-align:right">${t}</span><span style="width:96px;text-align:right">${eur(w.price)}</span><button class="btn sm ghost" onclick="A.wish('${w.id}')">edit</button></div>`; };
+  const linkOf = w => /^https?:\/\//i.test(w.link || '') ? ` <a class="acc small" href="${esc(w.link)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">store ↗</a>` : '';
+  // one compact row: tick to buy · dot = needs/wants · name (tap to edit) · price; second line = can I afford it · note
+  const row = w => { const [c, t] = fit(w); return `<div class="wr"><input type="checkbox" onchange="A.wishBuy('${w.id}')" title="Mark as bought">
+    <div class="wm" onclick="A.wish('${w.id}')" title="Tap to edit"><div class="wn"><i class="dot" style="background:${PAL[w.bucket]}"></i>${esc(w.name)}${linkOf(w)}</div>
+    <div class="ws small"><span class="${c}">${t}</span>${w.note ? ` <span class="muted">· ${esc(w.note)}</span>` : ''}</div></div><div class="wp">${eur(w.price)}</div></div>`; };
   const tot = b => sum(D.wishlist.filter(w => !w.bought && w.bucket === b), w => w.price);
   return `<div class="grid g4"><div class="card stat"><div class="lbl">Needs on list</div><div class="val">${eur0(tot('needs'))}</div><div class="sub">${eur(left.needs)} needs left this month</div></div>
     <div class="card stat"><div class="lbl">Wants on list</div><div class="val">${eur0(tot('wants'))}</div><div class="sub">${eur(left.wants)} wants left · ${s ? eur(s.weekLeft) : '—'} this week</div></div>
     <div class="card stat"><div class="lbl">Savings</div><div class="val">${eur0(bal)}</div><div class="sub">if paid from savings</div></div>
     <div class="card stat"><div class="lbl">Bought</div><div class="val">${bought.length}</div><div class="sub">${eur0(sum(bought, w => w.paid || w.price))} spent from this list</div></div></div>
-  <div class="card mt"><h3><span class="row"><span class="seg">${[['all', 'All'], ['needs', 'Needs'], ['wants', 'Wants']].map(([k, l]) => `<button class="${f === k ? 'on' : ''}" onclick="UI.wishFilter='${k}';render()">${l}</button>`).join('')}</span>
-      <select onchange="UI.wishSort=this.value;render()">${[['added', 'Newest first'], ['price', 'Cheapest first'], ['priceDesc', 'Most expensive first'], ['name', 'A–Z']].map(([k, l]) => `<option value="${k}" ${sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></span>
+  <div class="card mt"><h3 class="wishhead"><span class="row wrap"><span class="seg">${[['all', 'All'], ['needs', 'Needs'], ['wants', 'Wants']].map(([k, l]) => `<button class="${f === k ? 'on' : ''}" onclick="UI.wishFilter='${k}';render()">${l}</button>`).join('')}</span>
+      <select class="wsort" onchange="UI.wishSort=this.value;render()">${[['added', 'Newest first'], ['price', 'Cheapest first'], ['priceDesc', 'Most expensive first'], ['name', 'A–Z']].map(([k, l]) => `<option value="${k}" ${sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></span>
       <span class="act"><button class="btn pri sm" onclick="A.wish()">+ Add item</button></span></h3>
     <div class="list">${items.map(row).join('') || '<div class="empty">Nothing on the list. Add things you want or need to buy.</div>'}</div>
-    <div class="small faint mt">Tick an item when you buy it — you choose salary or savings, and it's taken from the right budget.</div></div>
-  ${bought.length ? `<div class="card mt"><h3>Bought</h3><div class="list">${bought.slice(0, 20).map(w => `<div class="li"><input type="checkbox" checked onchange="A.wishUnbuy('${w.id}')" title="Undo purchase"><span class="t faint" style="text-decoration:line-through">${esc(w.name)}</span><span class="tag ${w.bucket}">${w.bucket}</span><span class="small muted">${fd(w.boughtAt)} · ${w.source === 'savings' ? 'from savings' : 'from salary'}</span><span style="width:96px;text-align:right" class="muted">${eur(w.paid ?? w.price)}</span></div>`).join('')}</div></div>` : ''}`;
+    <div class="small faint mt">${legend([[PAL.needs, 'need'], [PAL.wants, 'want']])}<div style="margin-top:4px">Tick an item when you buy it — you choose salary or savings, and it's taken from the right budget. Tap a name to edit.</div></div></div>
+  ${bought.length ? `<div class="card mt"><h3>Bought</h3><div class="list">${bought.slice(0, 20).map(w => `<div class="wr"><input type="checkbox" checked onchange="A.wishUnbuy('${w.id}')" title="Undo purchase"><div class="wm"><div class="wn faint" style="text-decoration:line-through"><i class="dot" style="background:${PAL[w.bucket]}"></i>${esc(w.name)}</div><div class="ws small muted">${fd(w.boughtAt)} · ${w.source === 'savings' ? '<span class="warn">↗</span> from savings' : 'from salary'}</div></div><div class="wp muted">${eur(w.paid ?? w.price)}</div></div>`).join('')}</div></div>` : ''}`;
 };
 V.money_savings = () => {
   const bal = savingsBalance(), allocated = sum(D.goals, g => g.saved);
@@ -1173,6 +1174,7 @@ async function tourEnd() {
 
 // ---------------- what's new (shown once on each device after an update)
 const CHANGELOG = [
+  {v: '2.4.1', items: ['Wishlist fits phone screens: one compact row per item — coloured dot for need/want, price on the right, "fits this week" underneath, tap a name to edit']},
   {v: '2.4.0', items: ['Transactions fit your phone screen: amount up front, a coloured dot for needs/wants/savings, ↗ for paid from savings, tap a row to edit', 'All numbers are properly rounded — no more 177.45000000000002', 'Quick add: an editable preview (category, budget, paid from, day) so things are sorted right the first time, an Add button, and it remembers how you sorted a note before', 'iPhone: the ✓ above the keyboard now saves in Quick add', 'Wants limits per category with warnings at 80% and when you go over', 'Savings cover: how many months your savings last, plus your normal needs / wants / saved per pay period', 'A new guided tour (shown once on each device)', 'This "What\'s new" window after every update']},
   {v: '2.3.0', items: ['Monthly review', 'Recurring tasks & renewals with early reminders']},
   {v: '2.2.0', items: ['Goals with check-ins and reminders']},

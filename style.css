@@ -156,6 +156,15 @@ label.f input,label.f select,label.f textarea{width:100%;box-sizing:border-box}
 nav a .ico{display:none}
 .fab{display:none}
 .only-mob{display:none}
+.wr{display:grid;grid-template-columns:22px 1fr auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid #1a1a1f}
+.wr:last-child{border:0}
+.wm{min-width:0;cursor:pointer}
+.wn{overflow-wrap:anywhere;line-height:1.45}
+.wn .dot{display:inline-block;margin-right:7px;transform:translateY(-1px)}
+.ws{margin-top:2px;overflow-wrap:anywhere}
+.wp{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.wishhead{flex-wrap:wrap}
+.wsort{max-width:100%;padding:5px 8px!important}
 .txlist{display:flex;flex-direction:column}
 .txr{display:grid;grid-template-columns:10px 50px 78px 1fr auto;gap:8px;align-items:center;padding:11px 2px;border-bottom:1px solid #1a1a1f;cursor:pointer;font-size:12.5px}
 .txr:active{background:#15151a}.txr:last-child{border:0}
