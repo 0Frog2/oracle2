@@ -20,7 +20,7 @@ const dowi = s => (pd(s).getDay() + 6) % 7;
 const monday = s => addDays(s, -dowi(s));
 const fd = s => { const d = pd(s); return `${pad(d.getDate())} ${MON[d.getMonth()]}`; };
 const fdl = s => `${DOW[dowi(s)]} ${fd(s)}`;
-const eur = (n, dec = 2) => (n < 0 ? '−' : '') + '€' + Math.abs(n).toLocaleString('en-IE', {minimumFractionDigits: dec, maximumFractionDigits: dec});
+function eur(n, dec = 2) { if (typeof HIDE !== 'undefined' && HIDE) return '€••••'; return (n < 0 ? '−' : '') + '€' + Math.abs(n).toLocaleString('en-IE', {minimumFractionDigits: dec, maximumFractionDigits: dec}); }
 const eur0 = n => eur(n, Math.abs(n) >= 1000 ? 0 : 2);
 const daysIn = (y, m) => new Date(y, m, 0).getDate(); // m: 1-12
 const nf = (v, dec = 2) => (+v || 0).toLocaleString('en-IE', {maximumFractionDigits: dec}); // never shows 177.45000000000002
@@ -28,9 +28,10 @@ const stripTags = h => String(h).replace(/<[^>]*>/g, '');
 const qs = new URLSearchParams(location.search);
 const TODAY = qs.get('date') || iso(new Date());
 
-function lastWorkday(y, m) { // m 1-12
+function lastWorkday(y, m) { // m 1-12 — skips weekends and Bulgarian public holidays
   let d = new Date(y, m - 1, daysIn(y, m));
-  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
+  const bg = typeof BG !== 'undefined' && !(D && D.settings && D.settings.bgCalendar === false);
+  while (d.getDay() === 0 || d.getDay() === 6 || (bg && !BG.isWorkday(iso(d)))) d.setDate(d.getDate() - 1);
   return iso(d);
 }
 function estNextPayday(date) {
@@ -60,8 +61,8 @@ function parseDateWord(w) {
 }
 
 // ------------------------------------------------------------------ data, storage & sync
-const APP_VERSION = '2.4.1', DATA_VERSION = 2;
-const COLLS = ['lifeGoals', 'wishlist', 'people', 'tasks', 'paychecks', 'transactions', 'savingsMoves', 'recurring', 'goals', 'workouts', 'body'];
+const APP_VERSION = '2.5.0', DATA_VERSION = 2;
+const COLLS = ['lifeGoals', 'wishlist', 'people', 'tasks', 'paychecks', 'transactions', 'savingsMoves', 'recurring', 'goals', 'workouts', 'body', 'focus', 'media', 'assets'];
 let D = null, saveTimer = null, SNAP = {}, SYNC = null, NOTIFIED = {};
 const UI = {view: 'today', moneyTab: 'overview', gymTab: 'overview', recTab: 'people', calMonth: TODAY.slice(0, 7), calSel: TODAY, gymEx: null, txFilter: 'period', search: '', importPreview: null, sync: {state: 'off', msg: ''}};
 
@@ -82,16 +83,16 @@ const store = {
 };
 
 function defaults() {
-  return {version: DATA_VERSION, settings: {split: {needs: 50, wants: 30, savings: 20}, reminderDays: 7, startingSavings: 0, gymGoal: {weightMin: 0, weightMax: 0}, onboarded: false, limits: {},
+  return {version: DATA_VERSION, settings: {split: {needs: 50, wants: 30, savings: 20}, reminderDays: 7, startingSavings: 0, gymGoal: {weightMin: 0, weightMax: 0}, onboarded: false, limits: {}, bgCalendar: true, training: {days: {}, remind: true}, focusLabels: [],
     categories: [['Bills', 'needs'], ['Subscriptions', 'needs'], ['Food', 'needs'], ['Transport', 'needs'], ['Health', 'needs'], ['Eating out', 'wants'], ['Entertainment', 'wants'], ['Hobbies', 'wants'], ['Shopping', 'wants'], ['Investing', 'savings'], ['Other', 'wants']].map(([name, bucket]) => ({name, bucket}))},
-    lifeGoals: [], wishlist: [], people: [], tasks: [], paychecks: [], transactions: [], savingsMoves: [], recurring: [], goals: [], workouts: [], body: [], meta: {tomb: {}, settingsU: {}}};
+    lifeGoals: [], wishlist: [], people: [], tasks: [], paychecks: [], transactions: [], savingsMoves: [], recurring: [], goals: [], workouts: [], body: [], focus: [], media: [], assets: [], meta: {tomb: {}, settingsU: {}}};
 }
 // Upgrades older saved data so updates never lose anything. Add a step here whenever the format changes.
 function migrate(d) {
   const def = defaults();
   for (const k of COLLS) d[k] ||= [];
   d.settings = {...def.settings, ...(d.settings || {})};
-  d.settings.gymGoal ||= def.settings.gymGoal; d.settings.split ||= def.settings.split; d.settings.limits ||= {};
+  d.settings.gymGoal ||= def.settings.gymGoal; d.settings.split ||= def.settings.split; d.settings.limits ||= {}; d.settings.training ||= {days: {}, remind: true}; d.settings.training.days ||= {}; d.settings.focusLabels ||= [];
   d.meta ||= {}; d.meta.tomb ||= {}; if (typeof d.meta.settingsU !== 'object' || !d.meta.settingsU) d.meta.settingsU = {}; delete d.meta.notified;
   if ((d.version || 1) < 2) { /* v1 → v2: nothing to convert, records get sync stamps on first save */ }
   d.version = DATA_VERSION;
@@ -241,6 +242,78 @@ async function enableNotifications() {
   checkReminders(); render();
 }
 
+// ------------------------------------------------------------------ this device only: theme, hidden amounts, app lock (never synced)
+let PREFS = {}, HIDE = false, LOCKED = false, hiddenAt = 0;
+const ACCENTS = [['Mint', '#6fd6c0'], ['Ice', '#7cc4ff'], ['Amber', '#f0b35a'], ['Crimson', '#ff6b7a'], ['Violet', '#b39dff'], ['Lime', '#a8e06a'], ['Gold', '#d8b45a'], ['Rose', '#f39ac7']];
+const BGS = [['Midnight', '#0b0b0d', '#111114', '#16161a', '#0a0a0c'], ['Pure black', '#000000', '#0a0a0b', '#111113', '#000000'], ['Graphite', '#15161a', '#1b1c21', '#212228', '#121317'], ['Deep navy', '#0a0e14', '#0f141c', '#141a24', '#080b10']];
+const SIZES = [['Small', .92], ['Normal', 1], ['Large', 1.1], ['Extra large', 1.22]];
+async function loadPrefs() { PREFS = (await store.get('prefs')) || {}; HIDE = !!(PREFS.hideOnOpen || PREFS.hide); applyTheme(); }
+async function savePrefs() { await store.set('prefs', PREFS); }
+const darken = (hex, f) => { const n = parseInt(hex.slice(1), 16); return '#' + [n >> 16, n >> 8 & 255, n & 255].map(c => Math.round(c * f).toString(16).padStart(2, '0')).join(''); };
+function applyTheme() {
+  const t = PREFS.theme || {}, st = document.documentElement.style, acc = /^#[0-9a-f]{6}$/i.test(t.accent || '') ? t.accent : '#6fd6c0', bg = BGS.find(b => b[0] === t.bg) || BGS[0];
+  st.setProperty('--accent', acc); st.setProperty('--accent-dim', darken(acc, .42));
+  st.setProperty('--bg', bg[1]); st.setProperty('--panel', bg[2]); st.setProperty('--panel2', bg[3]); st.setProperty('--navbg', bg[4]);
+  st.setProperty('--zoom', t.zoom || 1);
+  const m = document.querySelector('meta[name=theme-color]'); if (m) m.content = bg[1];
+  const hb = $('#hideBtn'); if (hb) { hb.classList.toggle('on', HIDE); hb.title = HIDE ? 'Show amounts' : 'Hide amounts'; hb.innerHTML = HIDE ? EYE_OFF : EYE; }
+  const lb = $('#lockBtn'); if (lb) lb.style.display = PREFS.lock ? '' : 'none';
+}
+const EYE = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.9 17.9A10.8 10.8 0 0 1 12 19c-7 0-11-7-11-7a19.8 19.8 0 0 1 5.1-5.9M9.9 5.2A10 10 0 0 1 12 5c7 0 11 7 11 7a19.6 19.6 0 0 1-2.2 3.2M1 1l22 22"/></svg>';
+function toggleHide() { HIDE = !HIDE; PREFS.hide = HIDE; savePrefs(); applyTheme(); render(); }
+function setTheme(k, v) { PREFS.theme = {...(PREFS.theme || {}), [k]: v}; savePrefs(); applyTheme(); render(); }
+
+// ---- app lock: a PIN (4–8 digits) per device; phones can also use fingerprint / face. It keeps casual eyes out — it is not encryption.
+const rnd = n => crypto.getRandomValues(new Uint8Array(n));
+async function pinHash(pin, salt) { const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveBits']); return b64(await crypto.subtle.deriveBits({name: 'PBKDF2', salt: ub64(salt), iterations: 150000, hash: 'SHA-256'}, k, 256)); }
+const isPhone = () => /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+async function bioAvailable() { try { return isPhone() && !!window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(); } catch { return false; } }
+let pinBuf = '';
+function lockNow() { if (!PREFS.lock) return; LOCKED = true; pinBuf = ''; closeModal(); showLock(); }
+function showLock(msg) {
+  let l = $('#lockLayer'); if (!l) { l = document.createElement('div'); l.id = 'lockLayer'; document.body.appendChild(l); }
+  const wait = Math.max(0, Math.ceil(((PREFS.lock.until || 0) - Date.now()) / 1000));
+  l.innerHTML = `<div class="lockbox"><svg viewBox="0 0 32 32" width="38" height="38"><circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="2.4"/><circle cx="16" cy="16" r="4.2" fill="var(--accent)"/><path d="M16 1v5M16 26v5M1 16h5M26 16h5" stroke="currentColor" stroke-width="2"/></svg>
+    <div class="crumb" style="margin:14px 0 6px">&gt; ORACLE 2 // LOCKED</div><div class="small muted" id="lockMsg">${msg || (wait ? `Too many tries — wait ${wait}s` : 'Enter your PIN')}</div>
+    <div class="pindots">${[...Array(PREFS.lock.len || 4)].map((_, i) => `<i class="${i < pinBuf.length ? 'on' : ''}"></i>`).join('')}</div>
+    <div class="pinpad">${['1', '2', '3', '4', '5', '6', '7', '8', '9', PREFS.lock.cred ? 'bio' : '', '0', 'del'].map(k => k ? `<button type="button" onclick="pinKey('${k}')" ${k === 'bio' ? 'title="Fingerprint / face"' : ''}>${k === 'del' ? '⌫' : k === 'bio' ? '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 11v3m-4-3a4 4 0 0 1 8 0v1.5M5.5 9a7 7 0 0 1 13 0M8 17.5c.6-1 1-2.6 1-4.5m6 1.5c0 2-.4 3.4-1 4.5M3 13c0-1 .1-2 .4-3m17.2 0c.3 1 .4 2 .4 3"/></svg>' : k}</button>` : '<span></span>').join('')}</div>
+    <a class="small faint" style="cursor:pointer;margin-top:14px;display:inline-block" onclick="forgotPin()">Forgot PIN?</a></div>`;
+}
+async function pinKey(k) {
+  if (k === 'bio') return bioUnlock();
+  if (Date.now() < (PREFS.lock.until || 0)) return showLock();
+  if (k === 'del') pinBuf = pinBuf.slice(0, -1); else if (pinBuf.length < 8) pinBuf += k;
+  showLock();
+  if (pinBuf.length === (PREFS.lock.len || 4)) {
+    const ok = await pinHash(pinBuf, PREFS.lock.salt) === PREFS.lock.hash; pinBuf = '';
+    if (ok) { PREFS.lock.fails = 0; savePrefs(); return unlock(); }
+    PREFS.lock.fails = (PREFS.lock.fails || 0) + 1;
+    if (PREFS.lock.fails >= 5) PREFS.lock.until = Date.now() + 30e3 * 2 ** (PREFS.lock.fails - 5);
+    savePrefs(); showLock(PREFS.lock.fails >= 5 ? `Too many tries — wait ${Math.round(30 * 2 ** (PREFS.lock.fails - 5))}s` : 'Wrong PIN — try again');
+    $('#lockLayer .pindots')?.classList.add('shake');
+  }
+}
+function unlock() { LOCKED = false; $('#lockLayer')?.remove(); render(); if (UI.pendingDo) { runShortcut(UI.pendingDo); UI.pendingDo = null; } }
+async function bioUnlock() {
+  try { await navigator.credentials.get({publicKey: {challenge: rnd(32), allowCredentials: [{type: 'public-key', id: ub64(PREFS.lock.cred)}], userVerification: 'required', timeout: 60000}}); unlock(); }
+  catch { showLock('Fingerprint / face not recognised — use your PIN'); }
+}
+function forgotPin() {
+  const box = $('#lockLayer .lockbox');
+  box.innerHTML = SYNC ? `<h2 class="acc" style="font-size:13px;letter-spacing:.08em">FORGOT PIN</h2><div class="small muted" style="margin:8px 0 12px;line-height:1.7">Enter your <b>sync passphrase</b> to remove the PIN from this device. You can set a new one in Settings.</div>
+      <input type="password" id="fpPass" style="width:100%" placeholder="Sync passphrase"><div class="row mt"><button class="btn ghost" onclick="showLock()">Back</button><span class="sp"></span><button class="btn pri" onclick="forgotPinCheck()">Remove PIN</button></div>`
+    : `<h2 class="acc" style="font-size:13px;letter-spacing:.08em">FORGOT PIN</h2><div class="small muted" style="margin:8px 0 12px;line-height:1.7">Sync isn't on, so the only way in is to <b>erase Oracle 2's data on this device</b> and start fresh (or restore a backup file afterwards).</div>
+      <input id="fpErase" style="width:100%" placeholder="Type ERASE"><div class="row mt"><button class="btn ghost" onclick="showLock()">Back</button><span class="sp"></span><button class="btn danger" onclick="forgotPinErase()">Erase this device</button></div>`;
+}
+function forgotPinCheck() { if (SYNC && $('#fpPass').value === SYNC.pass) { delete PREFS.lock; savePrefs(); applyTheme(); unlock(); toast('PIN removed — set a new one in Settings → Privacy'); } else { $('#fpPass').value = ''; toast('That passphrase doesn\'t match'); } }
+async function forgotPinErase() { if ($('#fpErase').value !== 'ERASE') return toast('Type ERASE to confirm'); for (const k of ['data', 'prefs', 'sync', 'notified', 'focusRun']) await idb.del(k).catch(() => {}); location.reload(); }
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') hiddenAt = Date.now();
+  else if (PREFS.lock && !LOCKED && hiddenAt && Date.now() - hiddenAt >= (+PREFS.lock.after || 0) * 60e3) lockNow();
+});
+document.addEventListener('keydown', e => { if (!LOCKED) return; if (/^\d$/.test(e.key)) pinKey(e.key); else if (e.key === 'Backspace') pinKey('del'); }, true);
+
 // ------------------------------------------------------------------ money engine
 const catBucket = name => (D.settings.categories.find(c => c.name === name) || {}).bucket || 'wants';
 function currentPeriod(at = TODAY) {
@@ -295,6 +368,7 @@ function billOccurrences(from, to) {
   while (`${y}-${pad(m)}` <= to.slice(0, 7)) {
     for (const r of D.recurring) {
       if (r.active === false) continue;
+      if (r.freq === 'year' && +r.month !== m) continue;
       const date = `${y}-${pad(m)}-${pad(Math.min(+r.day || 1, daysIn(y, m)))}`;
       if (r.startDate && date < r.startDate) continue;
       if (date >= from && date <= to) { const ym = `${y}-${pad(m)}`; out.push({r, date, ym, paid: !!(r.payments || {})[ym]}); }
@@ -501,12 +575,162 @@ function eventsOn(date) {
     if (md && date.slice(5) === md) { const by = birthYear(p.birthday); ev.push({k: 'bday', g: '✦', c: 'var(--extra)', t: `${p.name}'s birthday`, s: by ? `turns ${+date.slice(0, 4) - by}` : ''}); } }
   for (const g of D.lifeGoals) { if (g.targetDate === date && g.status !== 'done') ev.push({k: 'goal', g: '◎', c: 'var(--wants)', t: `Goal deadline: ${g.title}`, s: `${Math.round(goalProgress(g) * 100)}% done`}); if (g.doneAt === date) ev.push({k: 'goal', g: '★', c: 'var(--good)', t: `Achieved: ${g.title}`, s: ''}); }
   for (const t of D.tasks) if (t.due === date) ev.push({k: 'task', g: t.done ? '☑' : '□', c: t.done ? 'var(--muted)' : 'var(--text)', t: t.title, s: t.done ? 'done' : ''});
+  const hol = holidayOn(date); if (hol) ev.unshift({k: 'holiday', g: '⚑', c: 'var(--bad)', t: hol, s: 'Public holiday in Bulgaria'});
+  if (bgOn()) for (const p of D.people) { const n = nameDayOf(p, +date.slice(0, 4)); if (n && n.date === date) ev.push({k: 'nameday', g: '✧', c: 'var(--extra)', t: `${p.name}'s name day`, s: n.feast}); }
+  if (date >= TODAY && !trainedOn(date) && planOn(date)) ev.push({k: 'plan', g: '◇', c: 'var(--muted)', t: `Plan: ${planOn(date)}`, s: 'planned workout'});
+  for (const m of D.media) if (m.status === 'done' && m.finished === date) ev.push({k: 'media', g: mKind(m.kind)[2], c: 'var(--accent)', t: `Finished: ${m.title}`, s: m.rating ? '★'.repeat(m.rating) : mKind(m.kind)[1]});
+  for (const f of D.focus) if (f.date === date) { const x = ev.find(e => e.k === 'focus'); if (x) { x.min += f.min; x.s = hm(x.min); } else ev.push({k: 'focus', g: '◷', c: 'var(--muted)', t: 'Focus', s: hm(f.min), min: f.min}); }
   for (const b of D.body) if (b.date === date) ev.push({k: 'body', g: '○', c: 'var(--muted)', t: 'Body log', s: [b.weight && b.weight + ' kg', b.waist && b.waist + ' cm waist'].filter(Boolean).join(' · ')});
   return ev;
 }
 
-// ------------------------------------------------------------------ views
 const V = {};
+// ------------------------------------------------------------------ Bulgarian holidays & name days
+const bgOn = () => D.settings.bgCalendar !== false;
+const holidayOn = d => bgOn() ? BG.holidays(+d.slice(0, 4))[d] || null : null;
+const feastsOn = d => bgOn() ? (BG.list(+d.slice(0, 4))[d] || []) : [];
+const nameDayOf = (p, y = +TODAY.slice(0, 4)) => bgOn() ? personNameDay(p, y) : null;
+function nextNameDay(p) { for (const y of [+TODAY.slice(0, 4), +TODAY.slice(0, 4) + 1]) { const n = nameDayOf(p, y); if (n && n.date >= TODAY) return n; } return null; }
+// keep in touch
+function touchDue(p) { if (!(+p.keepEvery > 0)) return null; const last = p.lastContact || p.keepSince || TODAY; return addDays(last, 7 * p.keepEvery); }
+const touchList = () => D.people.filter(p => +p.keepEvery > 0).map(p => ({p, due: touchDue(p)})).sort((a, b) => a.due < b.due ? -1 : 1);
+
+// ------------------------------------------------------------------ training plan (fixed weekdays, Mon = 0)
+const TR_TEMPLATES = [['Push / Pull / Legs', {0: 'Push', 2: 'Pull', 4: 'Legs'}], ['Upper / Lower', {0: 'Upper', 1: 'Lower', 3: 'Upper', 4: 'Lower'}], ['Full body ×3', {0: 'Full body', 2: 'Full body', 4: 'Full body'}], ['PPL ×2', {0: 'Push', 1: 'Pull', 2: 'Legs', 3: 'Push', 4: 'Pull', 5: 'Legs'}], ['Bro split', {0: 'Chest', 1: 'Back', 2: 'Legs', 3: 'Shoulders', 4: 'Arms'}]];
+const trDays = () => (D.settings.training || {}).days || {};
+const planOn = d => trDays()[dowi(d)] || null;
+const trainedOn = d => D.workouts.some(w => w.date.slice(0, 10) === d);
+function trAdherence(weeks = 8) {
+  const out = [], ms = monday(TODAY);
+  for (let i = weeks - 1; i >= 0; i--) {
+    const ws = addDays(ms, -7 * i), days = [...Array(7)].map((_, j) => addDays(ws, j));
+    const planned = days.filter(d => planOn(d) && d <= TODAY).length, done = days.filter(d => d <= TODAY && trainedOn(d)).length;
+    out.push({ws, days, planned, done, hit: Math.min(done, planned)});
+  }
+  return out;
+}
+V.gym_plan = () => {
+  const days = trDays(), any = Object.values(days).some(Boolean), A8 = trAdherence(8), cur = A8[A8.length - 1];
+  const pl = sum(A8.slice(0, -1), w => w.planned), ht = sum(A8.slice(0, -1), w => w.hit);
+  const grid = A8.slice(-4).map(w => `<div class="row small" style="gap:4px;margin:4px 0"><span class="muted" style="width:56px">${fd(w.ws)}</span>${w.days.map(d => { const p = planOn(d), t = trainedOn(d), fut = d > TODAY;
+    const [g, c, tip] = fut ? (p ? ['◇', 'var(--muted)', p + ' (planned)'] : ['·', 'var(--faint)', 'rest']) : p ? (t ? ['✓', 'var(--good)', p + ' — done'] : ['✗', 'var(--bad)', p + ' — missed']) : t ? ['◆', 'var(--accent)', 'extra workout'] : ['·', 'var(--faint)', 'rest'];
+    return `<span class="trc" style="color:${c}" data-tip="${esc(DOW[dowi(d)] + ' ' + fd(d) + '\n' + tip)}">${g}</span>`; }).join('')}<span class="sp"></span><span class="muted">${w.hit}/${w.planned}</span></div>`).join('');
+  return `<div class="grid g21"><div class="card"><h3>Weekly plan <span class="act faint small" style="text-transform:none;letter-spacing:0">synced to all your devices</span></h3>
+    <div class="list">${WEEKDAYS.map((d, i) => `<div class="li"><span style="width:96px" class="${dowi(TODAY) === i ? 'acc' : 'muted'}">${d}</span><input style="flex:1;min-width:0" placeholder="Rest day" value="${esc(days[i] || '')}" onchange="A.trDay(${i},this.value)"></div>`).join('')}</div>
+    <div class="small muted mt">Type a workout name for each training day, leave rest days empty.</div>
+    <div class="qk" style="margin-top:14px">Start from a template</div><div class="row wrap" style="gap:6px;margin-top:6px">${TR_TEMPLATES.map(([n], i) => `<button class="btn sm" onclick="A.trTemplate(${i})">${n}</button>`).join('')}${any ? '<button class="btn sm ghost danger" onclick="A.trTemplate(-1)">Clear</button>' : ''}</div></div>
+    <div class="grid" style="align-content:start"><div class="card stat hero"><div class="lbl">Today</div><div class="val" style="font-size:22px">${planOn(TODAY) ? esc(planOn(TODAY)) : 'Rest day'}</div><div class="sub">${planOn(TODAY) ? (trainedOn(TODAY) ? '<span class="good">✓ done</span>' : 'planned — import it afterwards to tick it off') : 'recover, walk, stretch'}</div></div>
+    <div class="card"><h3>Sticking to the plan</h3>${any ? `<div class="row" style="align-items:baseline;gap:8px"><span class="big">${pl ? Math.round(ht / pl * 100) : 0}%</span><span class="muted small">of planned workouts done · last 7 weeks</span></div>
+      <div class="small muted" style="margin:4px 0 8px">This week: ${cur.done} of ${Object.values(days).filter(Boolean).length} so far</div>${grid}
+      <div class="legend mt"><span><b style="color:var(--good);font-weight:400">✓</b>done</span><span><b style="color:var(--bad);font-weight:400">✗</b>missed</span><span><b style="color:var(--accent);font-weight:400">◆</b>extra</span><span><b style="color:var(--muted);font-weight:400">◇</b>coming</span></div>` : '<div class="empty small">Set your plan to see how well you stick to it.</div>'}</div></div></div>`;
+};
+
+// ------------------------------------------------------------------ focus timer (state per device; sessions synced)
+let FOCUS = null; // {start, end, min, label, goalId, mode, pausedLeft}
+const FOCUS_PRESETS = [['Pomodoro', 25, 5], ['Long', 50, 10], ['Short', 15, 3]];
+const focusLeft = () => !FOCUS ? 0 : FOCUS.pausedLeft != null ? FOCUS.pausedLeft : Math.max(0, FOCUS.end - Date.now());
+const mmss = ms => { const s = Math.ceil(ms / 1000); return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`; };
+function focusStart(min, label, goalId) {
+  min = Math.max(1, Math.min(240, +min || 25));
+  FOCUS = {start: Date.now(), end: Date.now() + min * 60e3, min, label: (label || '').trim() || 'Focus', goalId: goalId || '', mode: 'focus'};
+  store.set('focusRun', FOCUS); if (!D.settings.focusLabels?.includes(FOCUS.label)) { D.settings.focusLabels = [FOCUS.label, ...(D.settings.focusLabels || [])].slice(0, 8); save(); }
+  render();
+}
+function focusBreak(min) { FOCUS = {start: Date.now(), end: Date.now() + min * 60e3, min, mode: 'break'}; store.set('focusRun', FOCUS); render(); }
+function focusPause() { if (!FOCUS) return; if (FOCUS.pausedLeft != null) { FOCUS.end = Date.now() + FOCUS.pausedLeft; delete FOCUS.pausedLeft; } else FOCUS.pausedLeft = focusLeft(); store.set('focusRun', FOCUS); render(); }
+function focusStop(save_ = true) {
+  if (!FOCUS) return;
+  const doneMin = Math.round((FOCUS.min * 60e3 - focusLeft()) / 60e3);
+  if (save_ && FOCUS.mode === 'focus' && doneMin >= 1) { D.focus.push({id: uid(), date: TODAY, at: new Date(FOCUS.start).toTimeString().slice(0, 5), min: doneMin, label: FOCUS.label, goalId: FOCUS.goalId}); save(); toast(`${doneMin} min of focus saved`); }
+  FOCUS = null; idb.del('focusRun').catch(() => {}); render();
+}
+function focusTick() {
+  if (!FOCUS || FOCUS.pausedLeft != null) return;
+  const el = $('#focusClock'); if (el) { el.textContent = mmss(focusLeft()); const r = $('#focusRing'); if (r) r.style.setProperty('--p', 1 - focusLeft() / (FOCUS.min * 60e3)); }
+  document.title = `${mmss(focusLeft())} · ${FOCUS.mode === 'break' ? 'Break' : FOCUS.label} — Oracle 2`;
+  if (focusLeft() <= 0) {
+    const was = FOCUS.mode, lab = FOCUS.label; focusStop(true); document.title = 'Oracle 2';
+    try { const ac = new AudioContext(), o = ac.createOscillator(), g = ac.createGain(); o.connect(g); g.connect(ac.destination); o.frequency.value = 880; g.gain.setValueAtTime(.15, ac.currentTime); g.gain.exponentialRampToValueAtTime(.001, ac.currentTime + 1.2); o.start(); o.stop(ac.currentTime + 1.2); } catch {}
+    if ('Notification' in window && Notification.permission === 'granted') navigator.serviceWorker?.ready.then(r => r.showNotification(was === 'break' ? 'Break over' : 'Focus session done', {body: was === 'break' ? 'Ready for the next one?' : `${lab} — time for a short break.`, icon: 'icon-192.png', tag: 'focus'})).catch(() => {});
+    if (was === 'focus') modal(`<h2>Session done ✓</h2><div class="small muted">${esc(lab)} — saved. Take a break?</div><div class="row wrap mt">${[5, 10, 15].map(m => `<button class="btn" onclick="closeModal();focusBreak(${m})">${m} min break</button>`).join('')}<span class="sp"></span><button class="btn ghost" onclick="closeModal()">Skip</button></div>`);
+    else toast('Break over');
+  }
+}
+const focusMin = (from, to, f = () => true) => sum(D.focus.filter(s => s.date >= from && s.date <= to && f(s)), s => s.min);
+const hm = m => m >= 60 ? `${Math.floor(m / 60)}h ${m % 60 ? (m % 60) + 'm' : ''}`.trim() : `${m}m`;
+V.goals_focus = () => {
+  const ws = monday(TODAY), act = D.lifeGoals.filter(g => g.status === 'active'), labels = D.settings.focusLabels || [];
+  const pre = UI.focusPre || {min: 25, label: labels[0] || '', goalId: ''};
+  const running = FOCUS ? `<div class="focusbox"><div class="ring" id="focusRing" style="--p:${1 - focusLeft() / (FOCUS.min * 60e3)}"><div><div class="small muted">${FOCUS.mode === 'break' ? 'BREAK' : esc(FOCUS.label).toUpperCase()}</div><div id="focusClock" class="fclock">${mmss(focusLeft())}</div>${FOCUS.goalId ? `<div class="small faint">${esc((D.lifeGoals.find(g => g.id === FOCUS.goalId) || {}).title || '')}</div>` : ''}</div></div>
+      <div class="row wrap mt" style="justify-content:center"><button class="btn" onclick="focusPause()">${FOCUS.pausedLeft != null ? 'Resume' : 'Pause'}</button><button class="btn pri" onclick="focusStop(true)">${FOCUS.mode === 'break' ? 'End break' : 'Finish & save'}</button><button class="btn ghost danger" onclick="focusStop(false)">Discard</button></div>
+      <div class="small faint mt" style="text-align:center">Keeps counting if you switch apps or lock the phone.</div></div>`
+    : `<div class="formgrid"><label class="f full">What are you working on?<input id="fc_label" list="fcLabels" value="${esc(pre.label)}" placeholder="Study, Blender, reading…"><datalist id="fcLabels">${labels.map(l => `<option value="${esc(l)}">`).join('')}</datalist></label>
+      <label class="f">Minutes<input type="number" inputmode="numeric" id="fc_min" min="1" max="240" value="${pre.min}"></label>
+      <label class="f">Counts toward goal<select id="fc_goal"><option value="">— none —</option>${act.map(g => `<option value="${g.id}" ${pre.goalId === g.id ? 'selected' : ''}>${esc(g.title)}</option>`).join('')}</select></label></div>
+      <div class="row wrap mt">${FOCUS_PRESETS.map(([n, m]) => `<button class="btn sm" onclick="$('#fc_min').value=${m}">${n} ${m}</button>`).join('')}<span class="sp"></span><button class="btn pri" onclick="UI.focusPre={min:+val('fc_min'),label:val('fc_label'),goalId:val('fc_goal')};focusStart(val('fc_min'),val('fc_label'),val('fc_goal'))">▶ Start</button></div>`;
+  const days = [...Array(14)].map((_, i) => addDays(TODAY, i - 13));
+  const byL = {}; for (const s of D.focus.filter(s => s.date >= addDays(TODAY, -29))) byL[s.label] = (byL[s.label] || 0) + s.min;
+  const recent = D.focus.slice().sort((a, b) => (a.date + a.at) < (b.date + b.at) ? 1 : -1).slice(0, 8);
+  return `<div class="grid g4"><div class="card stat hero"><div class="lbl">Focus today</div><div class="val">${hm(focusMin(TODAY, TODAY))}</div><div class="sub">${D.focus.filter(s => s.date === TODAY).length} sessions</div></div>
+    <div class="card stat"><div class="lbl">This week</div><div class="val">${hm(focusMin(ws, TODAY))}</div><div class="sub">last week ${hm(focusMin(addDays(ws, -7), addDays(ws, -1)))}</div></div>
+    <div class="card stat"><div class="lbl">Last 30 days</div><div class="val">${hm(focusMin(addDays(TODAY, -29), TODAY))}</div><div class="sub">${(focusMin(addDays(TODAY, -29), TODAY) / 30).toFixed(0)} min a day</div></div>
+    <div class="card stat"><div class="lbl">Streak</div><div class="val">${(() => { let n = 0, d = D.focus.some(s => s.date === TODAY) ? TODAY : addDays(TODAY, -1); while (D.focus.some(s => s.date === d)) { n++; d = addDays(d, -1); } return n; })()}</div><div class="sub">days in a row</div></div></div>
+    <div class="grid g21 mt"><div class="card"><h3>Focus timer</h3>${running}</div>
+    <div class="grid" style="align-content:start"><div class="card"><h3>Last 14 days</h3>${columns(days.map(d => ({label: fd(d).split(' ')[0], value: focusMin(d, d), tip: `${fd(d)}: ${hm(focusMin(d, d))}`, color: d === TODAY ? 'var(--accent)' : 'var(--accent-dim)'})), {h: 140, fmt: v => Math.round(v) + 'm'})}</div>
+    <div class="card"><h3>By label · 30 days</h3>${Object.keys(byL).length ? hbars(Object.entries(byL).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([l, m]) => ({label: l, value: m, color: 'var(--accent)', right: hm(m)}))) : '<div class="empty small">No sessions yet</div>'}</div>
+    <div class="card"><h3>Recent</h3><div class="list">${recent.map(s => `<div class="li small"><span class="muted" style="width:86px">${fd(s.date)} ${s.at || ''}</span><span class="t">${esc(s.label)}</span><span>${hm(s.min)}</span><button class="btn sm ghost danger" title="Delete" onclick="A.del('focus','${s.id}')">×</button></div>`).join('') || '<div class="empty small">—</div>'}</div></div></div></div>`;
+};
+
+// ------------------------------------------------------------------ media log
+const MEDIA_KINDS = [['book', 'Book', '▤'], ['comic', 'Comic / manga', '▥'], ['game', 'Game', '◈'], ['film', 'Film', '▶'], ['series', 'Series', '▷']];
+const MEDIA_ST = [['backlog', 'Want to'], ['active', 'In progress'], ['done', 'Finished'], ['dropped', 'Dropped']];
+const mKind = k => MEDIA_KINDS.find(x => x[0] === k) || MEDIA_KINDS[0];
+const stars = n => n ? '★'.repeat(n) + '<span class="faint">' + '★'.repeat(5 - n) + '</span>' : '';
+function mediaBody(q) {
+  const f = UI.mediaSt || 'active', kf = UI.mediaKind || '';
+  const all = D.media.filter(m => (!kf || m.kind === kf) && (!q || JSON.stringify(m).toLowerCase().includes(q)));
+  const list = all.filter(m => m.status === f).sort((a, b) => ((b.finished || b.started || b.added || '') > (a.finished || a.started || a.added || '') ? 1 : -1));
+  const yr = D.media.filter(m => m.status === 'done' && (m.finished || '').startsWith(TODAY.slice(0, 4)));
+  const row = m => { const k = mKind(m.kind); return `<div class="li" style="cursor:pointer" onclick="A.media('${m.id}')"><span class="acc" style="width:16px" title="${k[1]}">${k[2]}</span><span class="t" style="white-space:normal">${esc(m.title)}${m.creator ? ` <span class="muted small">· ${esc(m.creator)}</span>` : ''}${m.progress ? ` <span class="tag">${esc(m.progress)}</span>` : ''}</span>
+    <span class="small" style="color:var(--gold,#d8b45a)">${stars(+m.rating)}</span><span class="small muted hide-m" style="width:70px;text-align:right">${m.status === 'done' && m.finished ? fd(m.finished) : m.status === 'active' && m.started ? 'since ' + fd(m.started) : ''}</span>
+    ${m.status === 'active' ? `<button class="btn sm" onclick="event.stopPropagation();A.mediaDone('${m.id}')">Finished</button>` : m.status === 'backlog' ? `<button class="btn sm" onclick="event.stopPropagation();A.mediaStart('${m.id}')">Start</button>` : ''}</div>`; };
+  return `<div class="grid g4" style="margin-bottom:16px">${MEDIA_KINDS.slice(0, 4).map(([k, l, g]) => `<div class="card stat"><div class="lbl">${g} ${{book: 'Books', comic: 'Comics', game: 'Games', film: 'Films & series'}[k]} ${TODAY.slice(0, 4)}</div><div class="val">${yr.filter(m => m.kind === k || (k === 'film' && m.kind === 'series')).length}</div><div class="sub">finished</div></div>`).join('')}</div>
+    <div class="row wrap" style="margin-bottom:12px;gap:8px"><span class="seg">${MEDIA_ST.map(([k, l]) => `<button class="${f === k ? 'on' : ''}" onclick="UI.mediaSt='${k}';render()">${l} <span class="faint">${all.filter(m => m.status === k).length}</span></button>`).join('')}</span>
+      <select onchange="UI.mediaKind=this.value;render()"><option value="">All kinds</option>${MEDIA_KINDS.map(([k, l]) => `<option value="${k}" ${kf === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+    <div class="card"><div class="list">${list.map(row).join('') || `<div class="empty">${f === 'backlog' ? 'Add books, games, films you want to get to.' : f === 'active' ? 'Nothing in progress. Start something from “Want to”.' : 'Nothing here yet.'}</div>`}</div></div>`;
+}
+
+// ------------------------------------------------------------------ net worth & investments
+const ASSET_KINDS = [['bank', 'Bank account'], ['invest', 'Investments / ETFs'], ['crypto', 'Crypto'], ['pension', 'Pension'], ['property', 'Property'], ['cash', 'Cash'], ['other', 'Other asset'], ['debt', 'Loan / debt']];
+const assetVal = (a, at = '9999') => { const v = (a.values || []).filter(x => x.date <= at).sort((x, y) => x.date < y.date ? -1 : 1).pop(); return v ? +v.value : 0; };
+const assetSign = a => a.kind === 'debt' ? -1 : 1;
+const assetContrib = a => sum(D.transactions.filter(t => t.assetId === a.id), t => t.amount);
+function netWorth(at = '9999') { return savingsBalance(at) + sum(D.assets.filter(a => !a.closed), a => assetSign(a) * assetVal(a, at)); }
+V.money_networth = () => {
+  const as = D.assets.filter(a => !a.closed), nw = netWorth(), owned = sum(as.filter(a => a.kind !== 'debt'), assetVal) + savingsBalance(), owed = sum(as.filter(a => a.kind === 'debt'), assetVal);
+  const dates = [...new Set(D.assets.flatMap(a => (a.values || []).map(v => v.date)))].sort();
+  const marks = new Set([...dates.filter(x => x <= TODAY), TODAY]); for (let d = dates[0] || TODAY; d < TODAY; d = ymAdd(d.slice(0, 7), 1) + '-01') marks.add(d);
+  const pts = dates.length ? [...marks].sort().map(x => ({x, y: r2(netWorth(x))})) : [];
+  const m3 = netWorth(addDays(TODAY, -90)), stale = as.filter(a => { const l = (a.values || []).map(v => v.date).sort().pop(); return !l || diff(l, TODAY) > 35; });
+  const card = a => { const v = assetVal(a), c = assetContrib(a), last = (a.values || []).map(x => x.date).sort().pop();
+    return `<div class="li" style="cursor:pointer" onclick="A.asset('${a.id}')"><span class="t" style="white-space:normal">${esc(a.name)} <span class="tag">${(ASSET_KINDS.find(k => k[0] === a.kind) || ASSET_KINDS[6])[1]}</span>${c ? `<div class="small muted">put in ${eur0(c)} · ${v - c >= 0 ? '<span class="good">+' : '<span class="bad">−'}${eur0(Math.abs(v - c)).replace('−', '')}</span> (${c ? Math.round((v - c) / c * 100) : 0}%)</div>` : ''}<div class="small faint">updated ${last ? fd(last) + ' ' + last.slice(0, 4) : 'never'}</div></span><span class="${a.kind === 'debt' ? 'bad' : ''}">${a.kind === 'debt' ? '−' : ''}${eur(v).replace('−', '')}</span></div>`; };
+  return `<div class="grid g4"><div class="card stat hero"><div class="lbl">Net worth</div><div class="val ${nw < 0 ? 'bad' : ''}">${eur0(nw)}</div><div class="sub">${dates.length ? delta(nw, m3, eur0, false).replace('vs last month', 'vs 3 months ago') : 'add what you own and owe'}</div></div>
+    <div class="card stat"><div class="lbl">Own</div><div class="val">${eur0(owned)}</div><div class="sub">incl. ${eur0(savingsBalance())} Oracle savings</div></div>
+    <div class="card stat"><div class="lbl">Owe</div><div class="val">${eur0(owed)}</div><div class="sub">loans & debts</div></div>
+    <div class="card stat"><div class="lbl">Invested</div><div class="val">${eur0(sum(as, assetContrib))}</div><div class="sub">from Investing expenses</div></div></div>
+    ${stale.length ? `<div class="card briefing mt"><div class="row wrap"><div><div class="acc">▸ ${stale.length} value${stale.length > 1 ? 's' : ''} not updated this month</div><div class="small muted">Takes a minute: type today's balances.</div></div><span class="sp"></span><button class="btn pri" onclick="A.assetUpdate()">Update values</button></div></div>` : ''}
+    <div class="grid g21 mt"><div class="card"><h3>Net worth over time</h3>${pts.length > 1 ? lineChart([{points: pts, color: 'var(--accent)'}], {h: 220, W: 640, fmt: v => eur(v, 0)}) : '<div class="empty">Update values once a month to see the trend</div>'}</div>
+    <div class="card"><h3>Accounts <span class="act"><button class="btn sm" onclick="A.assetUpdate()">Update values</button><button class="btn sm pri" onclick="A.asset()">+ Add</button></span></h3><div class="list">
+      <div class="li"><span class="t">Oracle savings <div class="small faint">from your paychecks & moves</div></span><span>${eur(savingsBalance())}</span></div>${as.map(card).join('')}</div>
+      ${!as.length ? '<div class="small muted mt">Add bank accounts, ETFs, crypto, pension or a loan. Tip: when you log an expense under <b>Investing</b>, pick the account it went into to track gains.</div>' : ''}</div></div>`;
+};
+
+// ------------------------------------------------------------------ subscriptions: yearly billing, price history, yearly check-up
+const perMonth = r => r.freq === 'year' ? r.amount / 12 : r.amount;
+const perYear = r => r.freq === 'year' ? r.amount : r.amount * 12;
+const needsReview = r => r.type === 'subscription' && r.active !== false && (!r.reviewed || diff(r.reviewed, TODAY) >= 365) && diff(r.startDate || TODAY, TODAY) >= 300;
+
+// ------------------------------------------------------------------ views
 
 V.today = () => {
   const p = currentPeriod(), st = p && periodStats(p), s = safeToSpend(p), isMon = dowi(TODAY) === 0;
@@ -558,7 +782,10 @@ V.today = () => {
   // upcoming (reminders window)
   const up = [];
   for (const pp of D.people) { const nb = nextBirthday(pp.birthday); if (nb && diff(TODAY, nb) <= Math.max(lead, 14)) up.push({d: nb, g: '✦', c: 'var(--extra)', t: `${pp.name}'s birthday`, s: pp.gifts ? 'gift ideas: ' + pp.gifts : ''}); }
-  for (const o of billOccurrences(TODAY, addDays(TODAY, Math.max(lead, 14)))) if (!o.paid) up.push({d: o.date, g: '▲', c: 'var(--warn)', t: `${o.r.name}`, s: eur(o.r.amount), bill: o});
+  for (const o of billOccurrences(TODAY, addDays(TODAY, Math.max(lead, 14)))) if (!o.paid) up.push({d: o.date, g: '▲', c: 'var(--warn)', t: `${o.r.name}${o.r.freq === 'year' ? ' (yearly)' : ''}`, s: eur(o.r.amount), bill: o});
+  if (bgOn()) { for (let i = 0; i <= 14; i++) { const d = addDays(TODAY, i), h = holidayOn(d); if (h) up.push({d, g: '⚑', c: 'var(--bad)', t: h, s: 'day off'}); }
+    for (const pp of D.people) { const n = nextNameDay(pp); if (n && diff(TODAY, n.date) <= 14) up.push({d: n.date, g: '✧', c: 'var(--extra)', t: `${pp.name}'s name day`, s: n.feast}); } }
+  for (const {p: pp, due} of touchList()) if (diff(TODAY, due) <= 3) up.push({d: due < TODAY ? TODAY : due, g: '☏', c: 'var(--accent)', t: `Catch up with ${pp.name}`, s: pp.lastContact ? `last talked ${fd(pp.lastContact)}` : `every ${pp.keepEvery} wk`, touch: pp});
   for (const t of D.tasks) if (!t.done && t.due && t.due <= addDays(TODAY, Math.max(14, +t.remindBefore || 0))) up.push({d: t.due, g: '□', c: t.due < TODAY ? 'var(--bad)' : 'var(--text)', t: t.title, s: t.due < TODAY ? 'overdue' : '', task: t});
   up.sort((a, b) => a.d < b.d ? -1 : 1);
   for (const g of D.lifeGoals) if (g.status === 'active' && g.targetDate && g.targetDate >= TODAY && diff(TODAY, g.targetDate) <= Math.max(lead, 14)) up.push({d: g.targetDate, g: '◎', c: 'var(--wants)', t: `Goal: ${g.title}`, s: `${Math.round(goalProgress(g) * 100)}% done`});
@@ -570,7 +797,7 @@ V.today = () => {
   const upcoming = `<div class="card"><h3>Upcoming · next 14 days <span class="act faint">reminders ${lead}d ahead</span></h3><div class="list">${up.length ? up.map(u => {
     const dd = diff(TODAY, u.d), when = dd < 0 ? `${-dd}d ago` : dd === 0 ? 'today' : dd === 1 ? 'tomorrow' : `in ${dd}d`;
     return `<div class="li"><span style="color:${u.c};width:14px">${u.g}</span><span class="t">${esc(u.t)} <span class="muted small">${esc(u.s)}</span></span>
-      ${u.bill ? `<button class="btn sm" onclick="A.payBill('${u.bill.r.id}','${u.bill.ym}')">Mark paid</button>` : ''}${u.task ? `<button class="btn sm" onclick="A.toggleTask('${u.task.id}')">Done</button>` : ''}
+      ${u.bill ? `<button class="btn sm" onclick="A.payBill('${u.bill.r.id}','${u.bill.ym}')">Mark paid</button>` : ''}${u.task ? `<button class="btn sm" onclick="A.toggleTask('${u.task.id}')">Done</button>` : ''}${u.touch ? `<button class="btn sm" onclick="A.talked('${u.touch.id}')">Talked</button>` : ''}
       <span class="small ${dd <= lead && dd >= 0 ? 'acc' : 'muted'}" style="width:74px;text-align:right">${when}</span></div>`; }).join('') : '<div class="empty">Nothing coming up</div>'}</div></div>`;
   // side: bucket bars + body
   const buckets = p ? `<div class="card"><h3>This pay period <span class="act faint small">${fd(p.start)} – ${fd(p.end)}</span></h3>${hbars(['needs', 'wants', 'savings'].map(k => ({label: k[0].toUpperCase() + k.slice(1), value: k === 'savings' ? p.budget.savings : st.spent[k], max: p.budget[k], color: PAL[k],
@@ -581,12 +808,16 @@ V.today = () => {
   const reviewCard = rvP ? `<div class="card briefing" style="margin-bottom:16px"><div class="row wrap"><div><div class="acc">▸ Pay period ${fd(rvP.start)} – ${fd(rvP.end)} has ended</div><div class="small muted">Check the leftover and decide how much goes to savings${rv.length > 1 ? ` · ${rv.length} periods waiting` : ''}.</div></div><span class="sp"></span><button class="btn pri" onclick="A.review('${rvP.pc.id}')">Review leftover</button></div></div>` : '';
   const rvm = ymAdd(TODAY.slice(0, 7), -1), hasData = D.transactions.some(t => t.date.startsWith(rvm)) || D.workouts.some(w => w.date.startsWith(rvm));
   const monthCard = +TODAY.slice(8) <= 10 && hasData ? `<div class="card" style="margin-bottom:16px"><div class="row wrap"><div><div class="acc">▸ Your ${MONTH_FULL[+rvm.slice(5) - 1]} review is ready</div><div class="small muted">Money, gym records, body, goals — and what's coming this month.</div></div><span class="sp"></span><button class="btn pri" onclick="openReview('${rvm}')">Open review</button></div></div>` : '';
-  return `${reviewCard}${monthCard}<div class="grid g4">${tiles}</div><div class="mt">${briefing}</div><div class="grid g21 mt">${upcoming}<div class="grid">${goalsCard}${limitsCard(true)}${buckets}${body}</div></div>`;
+  const tp = planOn(TODAY), hasPlan = Object.values(trDays()).some(Boolean);
+  const dayCard = `<div class="card"><div class="row wrap" style="gap:10px"><div style="flex:1;min-width:150px;cursor:pointer" onclick="UI.gymTab='plan';go('gym')"><div class="qk">Training</div><div style="margin-top:4px">${hasPlan ? (tp ? (trainedOn(TODAY) ? `<span class="good">✓</span> ${esc(tp)} done` : `Today: <b>${esc(tp)}</b>`) : '<span class="muted">Rest day</span>') : '<span class="muted small">Set a weekly plan →</span>'}</div></div>
+    <div style="flex:1;min-width:150px;cursor:pointer" onclick="UI.goalsTab='focus';go('goals')"><div class="qk">Focus today</div><div style="margin-top:4px">${FOCUS ? `<span class="acc">◷ running · ${mmss(focusLeft())}</span>` : `${hm(focusMin(TODAY, TODAY))} <span class="muted small">· start a session →</span>`}</div></div>
+    ${holidayOn(TODAY) || feastsOn(TODAY).length ? `<div style="flex:1;min-width:150px"><div class="qk">${holidayOn(TODAY) ? 'Holiday' : 'Name day today'}</div><div class="small" style="margin-top:4px">${esc(holidayOn(TODAY) || '')}${holidayOn(TODAY) && feastsOn(TODAY).length ? '<br>' : ''}${feastsOn(TODAY).length ? `<span class="muted">${esc(feastsOn(TODAY).map(f => f.feast + ': ' + f.names.slice(0, 5).join(', ')).join(' · '))}</span>` : ''}</div></div>` : ''}</div></div>`;
+  return `${reviewCard}${monthCard}<div class="grid g4">${tiles}</div><div class="mt">${dayCard}</div><div class="mt">${briefing}</div><div class="grid g21 mt">${upcoming}<div class="grid">${goalsCard}${limitsCard(true)}${buckets}${body}</div></div>`;
 };
 
 // ---------------- money
 V.money = () => {
-  const tabs = [['overview', 'Overview'], ['tx', 'Transactions'], ['bills', 'Bills & subscriptions'], ['wish', 'Wishlist'], ['savings', 'Savings & goals']];
+  const tabs = [['overview', 'Overview'], ['tx', 'Transactions'], ['bills', 'Bills & subscriptions'], ['wish', 'Wishlist'], ['savings', 'Savings & goals'], ['networth', 'Net worth']];
   return `<div class="row"><div class="tabs" style="flex:1">${tabs.map(([k, l]) => `<a class="${UI.moneyTab === k ? 'on' : ''}" onclick="UI.moneyTab='${k}';render()">${l}</a>`).join('')}</div>
     <div class="row" style="margin-bottom:18px"><button class="btn" onclick="A.paycheck()">+ Paycheck</button><button class="btn pri" onclick="A.expense()">+ Expense</button></div></div>` + V['money_' + UI.moneyTab]();
 };
@@ -609,7 +840,7 @@ V.money_overview = () => {
   // last 6 months spending
   const months = [...Array(6)].map((_, i) => { const d = pd(TODAY.slice(0, 8) + '01'); d.setMonth(d.getMonth() - 5 + i); return iso(d).slice(0, 7); });
   const mdata = months.map(m => { const v = sum(D.transactions.filter(t => t.date.startsWith(m)), t => t.amount); return {label: MON[+m.slice(5) - 1], value: v, tip: `${MON[+m.slice(5) - 1]} ${m.slice(0, 4)}\n${eur(v)} spent`}; });
-  const monthly = `<div class="card"><h3>Spending per month</h3>${columns(mdata, {fmt: v => '€' + Math.round(v)})}</div>`;
+  const monthly = `<div class="card"><h3>Spending per month</h3>${columns(mdata, {fmt: v => eur(v, 0)})}</div>`;
   return `<div class="grid g2">${split}${left}</div><div class="grid g2 mt">${limitsCard(false)}${catsCard}</div><div class="mt">${monthly}</div>`;
 };
 V.money_tx = () => {
@@ -625,15 +856,21 @@ V.money_tx = () => {
 };
 V.money_bills = () => {
   const from = TODAY, to = addDays(TODAY, 45), occ = billOccurrences(addDays(TODAY.slice(0, 8) + '01', 0), to);
-  const monthly = sum(D.recurring.filter(r => r.active !== false), r => r.amount);
+  const monthly = sum(D.recurring.filter(r => r.active !== false), perMonth);
   const subs = D.recurring.filter(r => r.type === 'subscription' && r.active !== false), bills = D.recurring.filter(r => r.type !== 'subscription' && r.active !== false);
   const tl = `<div class="card"><h3>Timeline · this month → +45 days</h3><div class="list">${occ.length ? occ.map(o => `<div class="li"><span class="muted" style="width:96px">${fdl(o.date)}</span><span style="color:${o.paid ? 'var(--muted)' : o.date < TODAY ? 'var(--bad)' : 'var(--warn)'}">${o.paid ? '✓' : '▲'}</span><span class="t">${esc(o.r.name)} <span class="tag">${o.r.type}</span></span><span>${eur(o.r.amount)}</span>
     ${o.paid ? '<span class="small muted" style="width:76px;text-align:right">paid</span>' : `<button class="btn sm" style="width:76px" onclick="A.payBill('${o.r.id}','${o.ym}')">Mark paid</button>`}</div>`).join('') : '<div class="empty">Add bills and subscriptions to see what is coming</div>'}</div></div>`;
-  const by = (list, label) => `<div class="card"><h3>${label} <span class="act muted">${eur(sum(list, r => r.amount))}/mo</span></h3><div class="list">${list.length ? list.sort((a, b) => a.day - b.day).map(r => `<div class="li"><span class="muted" style="width:60px">day ${r.day}</span><span class="t">${esc(r.name)}</span><span>${eur(r.amount)}</span><button class="btn sm ghost" onclick="A.recurring('${r.id}')">edit</button></div>`).join('') : '<div class="empty">None yet</div>'}</div></div>`;
-  const pie = `<div class="card"><h3>Fixed costs per month</h3><div class="row" style="gap:20px">${donut([{label: 'Bills', value: sum(bills, r => r.amount), color: PAL.needs}, {label: 'Subscriptions', value: sum(subs, r => r.amount), color: PAL.extra}], eur0(monthly), 'PER MONTH', 150)}
-    <div>${legend([[PAL.needs, 'Bills ' + eur(sum(bills, r => r.amount))], [PAL.extra, 'Subscriptions ' + eur(sum(subs, r => r.amount))]])}<div class="small muted mt">${eur(monthly * 12, 0)} per year</div>
+  const by = (list, label) => `<div class="card"><h3>${label} <span class="act muted">${eur(sum(list, perMonth))}/mo</span></h3><div class="list">${list.length ? list.sort((a, b) => a.day - b.day).map(r => `<div class="li" data-tip="${esc(`${r.name}\n${eur(perYear(r))} a year${(r.history || []).length ? `\nprice changed ${r.history.length}× — last ${fd(r.history[r.history.length - 1].date)}` : ''}`)}"><span class="muted" style="width:60px">${r.freq === 'year' ? MON[(+r.month || 1) - 1] + ' ' + r.day : 'day ' + r.day}</span><span class="t">${esc(r.name)}${(r.history || []).length ? ` <span class="${r.history[r.history.length - 1].to > r.history[r.history.length - 1].from ? 'warn' : 'good'} small">${r.history[r.history.length - 1].to > r.history[r.history.length - 1].from ? '▲' : '▼'}</span>` : ''}</span><span>${eur(r.amount)}<span class="faint small">${r.freq === 'year' ? '/yr' : ''}</span></span><button class="btn sm ghost" onclick="A.recurring('${r.id}')">edit</button></div>`).join('') : '<div class="empty">None yet</div>'}</div></div>`;
+  const rev = D.recurring.filter(needsReview), cancelled = D.recurring.filter(r => r.active === false && r.cancelledAt);
+  const check = `<div class="card ${rev.length ? 'briefing' : ''}"><h3>Subscription check-up <span class="act muted">${eur0(sum(subs, perYear))}/yr</span></h3>
+    ${rev.length ? `<div class="small muted" style="margin-bottom:6px">Not reviewed for a year. Still using them?</div><div class="list">${rev.map(r => `<div class="li"><span class="t">${esc(r.name)} <span class="muted small">${eur0(perYear(r))}/yr</span></span><button class="btn sm" onclick="A.subKeep('${r.id}')">Keep</button><button class="btn sm ghost danger" onclick="A.subCancel('${r.id}')">Cancel</button></div>`).join('')}</div>`
+      : `<div class="small muted">${subs.length ? 'All subscriptions reviewed in the last year. Each one comes back here yearly so you never pay for something you forgot about.' : 'Add subscriptions to get a yearly "still using it?" check.'}</div>`}
+    ${subs.length ? `<div class="list mt">${subs.slice().sort((a, b) => perYear(b) - perYear(a)).map(r => `<div class="li small"><span class="t">${esc(r.name)}</span><span class="faint">${r.reviewed ? 'checked ' + fd(r.reviewed) : ''}</span><span style="width:84px;text-align:right">${eur0(perYear(r))}/yr</span>${needsReview(r) ? '' : `<button class="btn sm ghost danger" onclick="A.subCancel('${r.id}')" title="Cancel subscription">×</button>`}</div>`).join('')}</div>` : ''}
+    ${cancelled.length ? `<div class="small faint mt">Cancelled: ${cancelled.map(r => `${esc(r.name)} (${fd(r.cancelledAt)}, saves ${eur0(perYear(r))}/yr) <a class="acc" style="cursor:pointer" onclick="A.subResume('${r.id}')">undo</a>`).join(' · ')}</div>` : ''}</div>`;
+  const pie = `<div class="card"><h3>Fixed costs per month</h3><div class="row" style="gap:20px">${donut([{label: 'Bills', value: sum(bills, perMonth), color: PAL.needs}, {label: 'Subscriptions', value: sum(subs, perMonth), color: PAL.extra}], eur0(monthly), 'PER MONTH', 150)}
+    <div>${legend([[PAL.needs, 'Bills ' + eur(sum(bills, perMonth))], [PAL.extra, 'Subscriptions ' + eur(sum(subs, perMonth))]])}<div class="small muted mt">${eur(monthly * 12, 0)} per year</div>
     <button class="btn pri mt" onclick="A.recurring()">+ Bill / subscription</button></div></div></div>`;
-  return `<div class="grid g21">${tl}<div class="grid">${pie}${by(bills, 'Bills')}${by(subs, 'Subscriptions')}</div></div>`;
+  return `<div class="grid g21"><div class="grid" style="align-content:start">${tl}${check}</div><div class="grid" style="align-content:start">${pie}${by(bills, 'Bills')}${by(subs, 'Subscriptions')}</div></div>`;
 };
 V.money_wish = () => {
   const p = currentPeriod(), st = p && periodStats(p), s = safeToSpend(p), bal = savingsBalance();
@@ -677,7 +914,7 @@ V.money_savings = () => {
     <div class="card stat"><div class="lbl">Invested (all time)</div><div class="val">${eur0(invested)}</div><div class="sub">category "Investing"</div></div>
     <div class="card stat"><div class="lbl">Added this year</div><div class="val">${eur0(sum(D.savingsMoves.filter(m => m.date.startsWith(TODAY.slice(0, 4)) && m.kind !== 'withdraw'), m => m.amount))}</div><div class="sub">from paychecks + leftovers</div></div>
     <div class="card stat"><div class="lbl">Manual</div><div class="row wrap mt"><button class="btn sm" onclick="A.saveMove('deposit')">+ Deposit</button><button class="btn sm" onclick="A.saveMove('withdraw')">− Withdraw</button></div></div></div>
-    <div class="grid g2 mt">${coverageCard()}<div class="card"><h3>Balance over time</h3>${pts.length ? lineChart([{points: pts, color: 'var(--savings)'}], {fmt: v => '€' + Math.round(v)}) : '<div class="empty">No savings activity yet</div>'}</div>
+    <div class="grid g2 mt">${coverageCard()}<div class="card"><h3>Balance over time</h3>${pts.length ? lineChart([{points: pts, color: 'var(--savings)'}], {fmt: v => eur(v, 0)}) : '<div class="empty">No savings activity yet</div>'}</div>
     <div class="card"><h3>Savings goals <span class="act"><button class="btn sm" onclick="A.goal()">+ Goal</button></span></h3>${D.goals.length ? D.goals.map(g => `<div style="margin:10px 0" data-tip="${esc(g.name)}\n${eur(g.saved)} of ${eur(g.target)}">
       <div class="row small"><span>${esc(g.name)}</span><span class="sp"></span><span class="muted">${eur0(g.saved)} / ${eur0(g.target)}</span></div>
       <div class="meter" style="height:8px"><i style="width:${Math.min(100, g.saved / g.target * 100)}%;background:var(--savings)"></i></div>
@@ -687,7 +924,7 @@ V.money_savings = () => {
 
 // ---------------- gym
 V.gym = () => {
-  const tabs = [['overview', 'Overview'], ['progress', 'Exercises'], ['body', 'Body'], ['history', 'History'], ['import', 'Import']];
+  const tabs = [['overview', 'Overview'], ['plan', 'Plan'], ['progress', 'Exercises'], ['body', 'Body'], ['history', 'History'], ['import', 'Import']];
   return `<div class="row"><div class="tabs" style="flex:1">${tabs.map(([k, l]) => `<a class="${UI.gymTab === k ? 'on' : ''}" onclick="UI.gymTab='${k}';render()">${l}</a>`).join('')}</div>
     <div class="row" style="margin-bottom:18px"><button class="btn" onclick="A.bodyLog()">+ Weight / waist</button><button class="btn pri" onclick="UI.gymTab='import';render()">Import workout</button></div></div>` + V['gym_' + UI.gymTab]();
 };
@@ -780,7 +1017,7 @@ V.gym_import = () => {
 
 // ---------------- records
 V.records = () => {
-  const tabs = [['people', 'People & birthdays'], ['tasks', 'Tasks & notes']];
+  const tabs = [['people', 'People'], ['tasks', 'Tasks & notes'], ['media', 'Media log']];
   const q = UI.search.toLowerCase();
   let body;
   if (UI.recTab === 'people') {
@@ -789,8 +1026,11 @@ V.records = () => {
       return `<div class="card"><h3><span style="color:var(--text);font-size:14px;text-transform:none;letter-spacing:0">${esc(p.name)}</span><span class="act"><button class="btn sm ghost" onclick="A.person('${p.id}')">edit</button></span></h3>
       <div class="small muted">${esc(p.relation || '')}</div>
       ${nb ? `<div class="row mt"><span style="color:var(--extra)">✦</span><span>${fd(nb)}${by ? ` · turns ${+nb.slice(0, 4) - by}` : ''}</span><span class="sp"></span><span class="small ${dd <= Math.max(7, D.settings.reminderDays) ? 'acc' : 'muted'}">${dd === 0 ? 'today!' : `in ${dd}d`}</span></div>` : '<div class="faint small mt">no birthday set</div>'}
+      ${(() => { const n = nextNameDay(p); return n ? `<div class="row small" style="margin-top:4px"><span style="color:var(--extra)">✧</span><span>Name day ${fd(n.date)} <span class="faint">${esc(n.feast)}</span></span><span class="sp"></span><span class="muted">${diff(TODAY, n.date) === 0 ? 'today!' : `in ${diff(TODAY, n.date)}d`}</span></div>` : ''; })()}
+      ${+p.keepEvery > 0 ? (() => { const due = touchDue(p), dd = diff(TODAY, due); return `<div class="row small" style="margin-top:6px"><span class="acc">☏</span><span class="${dd <= 0 ? 'warn' : 'muted'}">${dd < 0 ? `catch-up ${-dd}d overdue` : dd === 0 ? 'catch up today' : `catch up in ${dd}d`}${p.lastContact ? ` · last ${fd(p.lastContact)}` : ''}</span><span class="sp"></span><button class="btn sm" onclick="A.talked('${p.id}')">Talked today</button></div>`; })() : ''}
       ${p.gifts ? `<div class="small mt"><span class="muted">Gift ideas:</span> ${esc(p.gifts)}</div>` : ''}${p.notes ? `<div class="small muted mt">${esc(p.notes)}</div>` : ''}</div>`; }).join('') || '<div class="card"><div class="empty">No one added yet</div></div>'}</div>`;
-  } else {
+  } else if (UI.recTab === 'media') body = mediaBody(q);
+  else {
     const ts = D.tasks.filter(t => !q || JSON.stringify(t).toLowerCase().includes(q));
     const open = ts.filter(t => !t.done).sort((a, b) => (a.due || '9') < (b.due || '9') ? -1 : 1), done = ts.filter(t => t.done).sort((a, b) => (a.doneAt || '') < (b.doneAt || '') ? 1 : -1);
     const row = t => `<div class="li wrow"><input type="checkbox" ${t.done ? 'checked' : ''} onchange="A.toggleTask('${t.id}')"><span class="t ${t.done ? 'faint' : ''}" style="${t.done ? 'text-decoration:line-through' : ''}">${esc(t.title)}${t.notes ? ` <span class="muted small">— ${esc(t.notes)}</span>` : ''}</span>
@@ -802,7 +1042,7 @@ V.records = () => {
   }
   return `<div class="row"><div class="tabs" style="flex:1">${tabs.map(([k, l]) => `<a class="${UI.recTab === k ? 'on' : ''}" onclick="UI.recTab='${k}';render()">${l}</a>`).join('')}</div>
     <div class="row" style="margin-bottom:18px"><input placeholder="Search…" value="${esc(UI.search)}" oninput="UI.search=this.value;clearTimeout(window._st);window._st=setTimeout(()=>{render();const i=document.querySelector('#view input');i.focus();i.setSelectionRange(99,99)},250)">
-    <button class="btn pri" onclick="${UI.recTab === 'people' ? 'A.person()' : 'A.task()'}">+ ${UI.recTab === 'people' ? 'Person' : 'Task / note'}</button></div></div>${body}`;
+    <button class="btn pri" onclick="${{people: 'A.person()', tasks: 'A.task()', media: 'A.media()'}[UI.recTab]}">+ ${{people: 'Person', tasks: 'Task / note', media: 'Add'}[UI.recTab]}</button></div></div>${body}`;
 };
 
 // ---------------- life goals
@@ -814,6 +1054,7 @@ function goalCurrent(g) {
   if (g.source === 'weight') return latest('weight') ?? g.current ?? g.start;
   if (g.source === 'waist') return latest('waist') ?? g.current ?? g.start;
   if (g.source === 'savings') return r2(savingsBalance());
+  if (g.source === 'focus') return r2(sum(D.focus.filter(f => f.goalId === g.id), f => f.min) / 60);
   return g.current ?? g.start;
 }
 function goalProgress(g) {
@@ -849,7 +1090,8 @@ function goalCard(g) {
     ${reached ? `<div class="small good mt">✓ Target reached — mark it achieved?</div>` : ''}
     <div class="row wrap mt">${g.status === 'active' ? `<button class="btn ${due ? 'pri' : ''} sm" onclick="A.goalCheckin('${g.id}')">${due ? 'Check in now' : 'Check in'}</button>${reached || g.kind === 'simple' ? `<button class="btn sm" onclick="A.goalDone('${g.id}')">★ Achieved</button>` : ''}` : ''}<span class="sp"></span><button class="btn sm ghost" onclick="A.goal2('${g.id}')">edit</button></div></div>`;
 }
-V.goals = () => {
+V.goals = () => `<div class="tabs">${[['list', 'Goals'], ['focus', 'Focus timer']].map(([k, l]) => `<a class="${(UI.goalsTab || 'list') === k ? 'on' : ''}" onclick="UI.goalsTab='${k}';render()">${l}</a>`).join('')}</div>` + (UI.goalsTab === 'focus' ? V.goals_focus() : V.goals_list());
+V.goals_list = () => {
   const f = UI.goalFilter || 'active', all = D.lifeGoals;
   const list = all.filter(g => f === 'all' || (f === 'active' ? g.status !== 'done' : g.status === 'done'))
     .sort((a, b) => (goalDueToday(b) - goalDueToday(a)) || ((a.status === 'paused') - (b.status === 'paused')) || ((a.targetDate || '9') < (b.targetDate || '9') ? -1 : 1));
@@ -947,7 +1189,8 @@ function monthStats(ym) {
   const wt = bodyM('weight'), wa = bodyM('waist');
   const goalsDone = D.lifeGoals.filter(g => inM(g.doneAt)), checkins = sum(D.lifeGoals, g => (g.log || []).filter(l => inM(l.date)).length);
   const tasksDone = D.tasks.filter(t => inM(t.doneAt)).length + sum(D.tasks, t => (t.history || []).filter(inM).length);
-  return {ym, spent, byB, cats, income, saved, fromSavings, bills, bought, ws, vol: sum(ws, wVol), nsets: sum(ws, wSets), sets, prs, wt, wa, goalsDone, checkins, tasksDone};
+  const media = D.media.filter(m => m.status === 'done' && inM(m.finished)), focusM = sum(D.focus.filter(f => inM(f.date)), f => f.min);
+  return {ym, media, focusM, spent, byB, cats, income, saved, fromSavings, bills, bought, ws, vol: sum(ws, wVol), nsets: sum(ws, wSets), sets, prs, wt, wa, goalsDone, checkins, tasksDone};
 }
 function delta(cur, prev, fmt, lowerIsGood) {
   if (!prev) return '';
@@ -969,6 +1212,8 @@ V.review = () => {
   if (S.prs.length) highlights.push(`${S.prs.length} new strength record${S.prs.length > 1 ? 's' : ''}`);
   if (S.goalsDone.length) highlights.push(`${S.goalsDone.length} goal${S.goalsDone.length > 1 ? 's' : ''} achieved`);
   if (S.saved > 0) highlights.push(`${eur0(S.saved)} saved`);
+  if (S.media.length) highlights.push(`finished ${S.media.map(m => m.title).slice(0, 3).join(', ')}${S.media.length > 3 ? ` +${S.media.length - 3}` : ''}`);
+  if (S.focusM >= 60) highlights.push(`${hm(S.focusM)} of focus`);
   if (wch !== null && wch < 0) highlights.push(`${Math.abs(wch).toFixed(1)} kg down`);
   if (wach !== null && wach < 0) highlights.push(`${Math.abs(wach).toFixed(1)} cm off the waist`);
   return `<div class="row" style="margin-bottom:16px"><button class="btn" onclick="UI.revMonth='${ymAdd(ym, -1)}';render()">‹</button><div style="font-size:18px;min-width:200px;text-align:center">${ymName(ym)}</div><button class="btn" onclick="UI.revMonth='${ymAdd(ym, 1)}';render()" ${ym >= TODAY.slice(0, 7) ? 'disabled' : ''}>›</button><span class="sp"></span><span class="small muted">${ym === TODAY.slice(0, 7) ? 'month so far' : 'monthly review'}</span></div>
@@ -1024,42 +1269,66 @@ V.calendar = () => {
       <div class="cal" style="margin-bottom:6px">${DOW.map(d => `<div class="dh">${d.toUpperCase()}</div>`).join('')}</div>
       <div class="cal">${monthEv.map(({d, ev}) => { const spend = sum(ev.filter(e => e.k === 'spend'), e => e.amt), inc = ev.filter(e => e.k === 'income');
         const items = ev.filter(e => !['spend', 'body'].includes(e.k));
-        return `<div class="cd ${d.slice(0, 7) !== UI.calMonth ? 'out' : ''} ${d === TODAY ? 'today' : ''} ${d === UI.calSel ? 'sel' : ''}" onclick="UI.calSel='${d}';render()">
+        return `<div class="cd ${d.slice(0, 7) !== UI.calMonth ? 'out' : ''} ${ev.some(e => e.k === 'holiday') ? 'hol' : ''} ${d === TODAY ? 'today' : ''} ${d === UI.calSel ? 'sel' : ''}" onclick="UI.calSel='${d}';render()">
           <div class="row"><span class="n">${pd(d).getDate()}</span><span class="sp"></span>${ev.some(e => e.k === 'gym') ? '<span style="color:var(--accent)">◆</span>' : ''}</div>
-          ${items.filter(e => e.k !== 'gym').slice(0, 3).map(e => `<div class="mk"><span style="color:${e.c}">${e.g}</span><span>${esc(e.t)}</span></div>`).join('')}
+          ${items.filter(e => !['gym', 'focus'].includes(e.k)).slice(0, 3).map(e => `<div class="mk"><span style="color:${e.c}">${e.g}</span><span>${esc(e.t)}</span></div>`).join('')}
           ${spend ? `<div class="mk muted"><span>−${eur(spend).replace('−', '')}</span></div>` : ''}${inc.length ? `<div class="mk good"><span>+${eur(sum(D.paychecks.filter(p => p.date === d), p => p.amount), 0)}</span></div>` : ''}</div>`; }).join('')}</div>
-      <div class="mt"><div class="legend">${[['var(--accent)', '◆', 'workout'], ['var(--warn)', '▲', 'bill due'], ['var(--muted)', '✓', 'bill paid'], ['var(--extra)', '✦', 'birthday'], ['var(--text)', '□', 'task'], ['var(--wants)', '◎', 'goal deadline'], ['var(--good)', '★', 'goal achieved'], ['var(--good)', '+€', 'income'], ['var(--muted)', '−€', 'spent'], ['var(--savings)', '↗', 'to savings']].map(([c, g, l]) => `<span><b style="color:${c};font-weight:400">${g}</b>${l}</span>`).join('')}</div></div></div>
+      <div class="mt"><div class="legend">${[ ['var(--accent)', '◆', 'workout'], ['var(--muted)', '◇', 'planned'], ['var(--bad)', '⚑', 'holiday'], ['var(--extra)', '✧', 'name day'], ['var(--warn)', '▲', 'bill due'], ['var(--muted)', '✓', 'bill paid'], ['var(--extra)', '✦', 'birthday'], ['var(--text)', '□', 'task'], ['var(--wants)', '◎', 'goal deadline'], ['var(--good)', '★', 'goal achieved'], ['var(--good)', '+€', 'income'], ['var(--muted)', '−€', 'spent'], ['var(--savings)', '↗', 'to savings']].map(([c, g, l]) => `<span><b style="color:${c};font-weight:400">${g}</b>${l}</span>`).join('')}</div></div></div>
     <div class="card" style="position:sticky;top:0"><h3>${fdl(UI.calSel)} ${UI.calSel.slice(0, 4)}</h3>
+      ${feastsOn(UI.calSel).length ? `<div class="small muted" style="margin:-4px 0 8px;line-height:1.6"><span style="color:var(--extra)">✧</span> ${feastsOn(UI.calSel).map(f => `<b style="font-weight:500;color:var(--text)">${esc(f.feast)}</b> — ${esc(f.names.join(', '))}`).join('<br>')}</div>` : ''}
       ${sel.length ? sel.map(e => `<div class="li" style="align-items:flex-start"><span style="color:${e.c};width:14px">${e.g}</span><div style="flex:1;min-width:0"><div>${esc(e.t)}</div>${e.s ? `<div class="small muted">${esc(e.s)}</div>` : ''}</div></div>`).join('') : '<div class="empty">Nothing on this day</div>'}
       <div class="row wrap mt"><button class="btn sm" onclick="A.expense(null,'${UI.calSel}')">+ Expense</button><button class="btn sm" onclick="A.task(null,'${UI.calSel}')">+ Task</button></div></div></div>`;
 };
 
 // ---------------- settings
 V.settings = () => {
-  const s = D.settings, sp = s.split, nperm = 'Notification' in window ? Notification.permission : 'unsupported';
-  const syncCard = `<div class="card"><h3>Sync between your devices <span class="act small ${UI.sync.state === 'error' ? 'bad' : 'muted'}">${SYNC ? (UI.sync.state === 'error' ? 'problem' : 'on') : 'off'}</span></h3>
+  const s = D.settings, sp = s.split, nperm = 'Notification' in window ? Notification.permission : 'unsupported', t = PREFS.theme || {}, L = PREFS.lock;
+  const secs = [['look', 'Appearance'], ['privacy', 'Privacy & lock'], ['money', 'Money'], ['remind', 'Reminders'], ['sync', 'Sync'], ['data', 'Data'], ['about', 'About']];
+  const sw = (on, fn, label, sub) => `<label class="li" style="cursor:pointer"><span class="t" style="white-space:normal">${label}${sub ? `<div class="small faint">${sub}</div>` : ''}</span><span class="switch ${on ? 'on' : ''}" onclick="event.preventDefault();${fn}"><i></i></span></label>`;
+  const syncCard = `<div class="card" id="sec-sync"><h3>Sync between your devices <span class="act small ${UI.sync.state === 'error' ? 'bad' : 'muted'}">${SYNC ? (UI.sync.state === 'error' ? 'problem' : 'on') : 'off'}</span></h3>
     ${SYNC ? `<div class="small" style="line-height:1.8">Encrypted copy stored in a secret gist on your GitHub account.<br><span class="muted">Last sync:</span> ${SYNC.last ? ago(SYNC.last) : 'never'}${UI.sync.state === 'error' ? `<br><span class="bad">${esc(UI.sync.msg)}</span>` : ''}</div>
-      <div class="row mt"><button class="btn pri" onclick="syncNow(true)">Sync now</button><button class="btn ghost" onclick="A.syncSetup()">Change token / passphrase</button><span class="sp"></span><button class="btn ghost danger" onclick="A.syncOff()">Turn off on this device</button></div>`
+      <div class="row wrap mt"><button class="btn pri" onclick="syncNow(true)">Sync now</button><button class="btn ghost" onclick="A.syncSetup()">Change token / passphrase</button><span class="sp"></span><button class="btn ghost danger" onclick="A.syncOff()">Turn off on this device</button></div>`
     : `<div class="small muted" style="line-height:1.8">Keep your phone and PC in sync. Your data is encrypted on this device with a passphrase only you know, then stored in a secret gist on <b>your own</b> GitHub account — GitHub can't read it, and no one else is involved.</div>
       <div class="row mt"><button class="btn pri" onclick="A.syncSetup()">Set up sync</button></div>`}</div>`;
-  return `<div class="grid g2"><div class="card"><h3>Default income split</h3>
+  return `<div class="secnav">${secs.map(([k, l]) => `<a onclick="document.getElementById('sec-${k}').scrollIntoView({behavior:'smooth',block:'start'})">${l}</a>`).join('')}</div>
+  <div class="grid g2">
+  <div class="card" id="sec-look"><h3>Appearance <span class="act faint small" style="text-transform:none;letter-spacing:0">this device only</span></h3>
+    <div class="qk">Accent colour</div><div class="swatches">${ACCENTS.map(([n, c]) => `<button class="swatch ${(t.accent || '#6fd6c0') === c ? 'on' : ''}" style="background:${c}" title="${n}" onclick="setTheme('accent','${c}')"></button>`).join('')}
+      <label class="swatch custom" title="Pick any colour" style="background:${t.accent && !ACCENTS.some(a => a[1] === t.accent) ? t.accent : 'conic-gradient(red,yellow,lime,cyan,blue,magenta,red)'}"><input type="color" value="${t.accent || '#6fd6c0'}" onchange="setTheme('accent',this.value)"></label></div>
+    <div class="qk" style="margin-top:14px">Background</div><div class="row wrap" style="gap:6px;margin-top:6px">${BGS.map(b => `<button class="bgchip ${(t.bg || 'Midnight') === b[0] ? 'on' : ''}" style="background:${b[2]}" onclick="setTheme('bg','${b[0]}')"><i style="background:${b[1]}"></i>${b[0]}</button>`).join('')}</div>
+    <div class="qk" style="margin-top:14px">Text size</div><div style="margin-top:6px"><span class="seg">${SIZES.map(([n, z]) => `<button class="${(t.zoom || 1) === z ? 'on' : ''}" onclick="setTheme('zoom',${z})">${n}</button>`).join('')}</span></div></div>
+  <div class="card" id="sec-privacy"><h3>Privacy & lock <span class="act faint small" style="text-transform:none;letter-spacing:0">this device only</span></h3><div class="list">
+    ${sw(HIDE, 'toggleHide()', 'Hide amounts now', 'Shows €•••• everywhere — also the eye button at the top')}
+    ${sw(PREFS.hideOnOpen, 'PREFS.hideOnOpen=!PREFS.hideOnOpen;savePrefs();render()', 'Hide amounts every time the app opens', 'Tap the eye to show them')}
+    <div class="li"><span class="t" style="white-space:normal">App lock (PIN)<div class="small faint">${L ? `On · ${L.len}-digit PIN${L.cred ? ' + fingerprint / face' : ''}` : 'Off — optional. Asks for a PIN when the app opens.'}</div></span>${L ? `<button class="btn sm" onclick="A.pinSet(true)">Change</button><button class="btn sm ghost danger" onclick="A.pinOff()">Turn off</button>` : `<button class="btn sm pri" onclick="A.pinSet(false)">Set PIN</button>`}</div>
+    ${L ? `<div class="li"><span class="t">Lock again after leaving the app</span><select onchange="PREFS.lock.after=+this.value;savePrefs()">${[[0, 'Immediately'], [1, '1 minute'], [5, '5 minutes'], [15, '15 minutes'], [60, '1 hour']].map(([v, l]) => `<option value="${v}" ${(+L.after || 0) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div id="bioRow"></div><div class="li"><span class="t">Lock now</span><button class="btn sm" onclick="lockNow()">Lock</button></div>` : ''}</div>
+    <div class="small faint mt">The lock keeps casual eyes out of the app. It doesn't encrypt the data on this device — use your phone's / PC's own lock for that.</div></div>
+  <div class="card" id="sec-money"><h3>Default income split</h3>
     <div class="formgrid" style="grid-template-columns:repeat(3,1fr)">${['needs', 'wants', 'savings'].map(k => `<label class="f">${k.toUpperCase()} %<input type="number" inputmode="numeric" min="0" max="100" id="sp_${k}" value="${sp[k]}" oninput="A.splitCheck()"></label>`).join('')}</div>
     <div class="meter" id="spBar" style="height:10px">${['needs', 'wants', 'savings'].map(k => `<i style="width:${sp[k]}%;background:${PAL[k]}"></i>`).join('')}</div><div class="row mt"><span id="spSum" class="small"></span><span class="sp"></span><button class="btn pri" id="spSave" onclick="A.splitSave()">Save split</button></div>
-    <div class="small faint mt">Bills & subscriptions come out of Needs. "Safe to spend" uses Wants only.</div></div>
-  <div class="card"><h3>General</h3><div class="formgrid">
+    <div class="small faint mt">Bills & subscriptions come out of Needs. "Safe to spend" uses Wants only. Wants limits: Money → Overview.</div>
+    <h3 class="mt" style="margin-top:20px">Spending categories <span class="act"><button class="btn sm" onclick="A.catAdd()">+ Category</button></span></h3><div class="list">${s.categories.map((c, i) => `<div class="li"><input value="${esc(c.name)}" style="flex:1" onchange="A.catEdit(${i},'name',this.value)">
+      <select onchange="A.catEdit(${i},'bucket',this.value)">${['needs', 'wants', 'savings'].map(b => `<option ${c.bucket === b ? 'selected' : ''}>${b}</option>`).join('')}</select><button class="btn sm ghost danger" onclick="A.catDel(${i})">×</button></div>`).join('')}</div></div>
+  <div class="card" id="sec-remind"><h3>Reminders & calendar</h3><div class="formgrid">
     <label class="f">Remind me this many days ahead (min 7)<input type="number" inputmode="numeric" min="7" id="st_rem" value="${s.reminderDays}"></label>
     <label class="f">Savings you already have (€)<input type="number" inputmode="decimal" step="0.01" id="st_sav" value="${s.startingSavings}"></label>
     <label class="f">Goal weight min (kg, optional)<input type="number" inputmode="decimal" step="0.5" id="st_gmin" value="${s.gymGoal.weightMin || ''}"></label>
     <label class="f">Goal weight max (kg, optional)<input type="number" inputmode="decimal" step="0.5" id="st_gmax" value="${s.gymGoal.weightMax || ''}"></label></div>
-    <div class="row mt">${nperm === 'granted' ? '<span class="small good">✓ Notifications on</span>' : `<button class="btn" onclick="enableNotifications()">Turn on notifications</button>`}<span class="sp"></span><button class="btn pri" onclick="A.generalSave()">Save</button></div></div></div>
-  <div class="grid g2 mt">${syncCard}
-  <div class="card"><h3>Data on this device</h3><div class="small muted" style="line-height:1.8">Everything is stored inside this app on this device. Nothing is sent anywhere unless you turn on sync.<br>Export a backup now and then — clearing the browser's site data would erase it.</div>
-    <div class="row wrap mt"><button class="btn" onclick="A.exportData()">Export backup</button><label class="btn">Import backup<input type="file" accept=".json,application/json" hidden onchange="A.importData(this)"></label><span class="sp"></span><button class="btn ghost danger" onclick="A.wipe()">Erase all data</button></div></div></div>
-  <div class="grid g2 mt"><div class="card"><h3>Spending categories <span class="act"><button class="btn sm" onclick="A.catAdd()">+ Category</button></span></h3><div class="list">${s.categories.map((c, i) => `<div class="li"><input value="${esc(c.name)}" style="flex:1" onchange="A.catEdit(${i},'name',this.value)">
-      <select onchange="A.catEdit(${i},'bucket',this.value)">${['needs', 'wants', 'savings'].map(b => `<option ${c.bucket === b ? 'selected' : ''}>${b}</option>`).join('')}</select><button class="btn sm ghost danger" onclick="A.catDel(${i})">×</button></div>`).join('')}</div></div>
-  <div class="card"><h3>About</h3><div class="small muted" style="line-height:1.9">Oracle 2 · version ${APP_VERSION}<br>Updates install themselves the next time you open the app — your data stays.<br><kbd>Ctrl K</kbd> quick add · <kbd>1</kbd>–<kbd>8</kbd> switch pages · <kbd>Esc</kbd> close</div>
-    <div class="row wrap mt"><button class="btn" onclick="UI.view='help';render()">Open help</button><button class="btn ghost" onclick="showWhatsNew('0')">What's new</button><button class="btn ghost" onclick="A.checkUpdate()">Check for update</button></div></div></div>`;
+    <div class="row mt"><span class="sp"></span><button class="btn pri" onclick="A.generalSave()">Save</button></div>
+    <div class="list mt">${sw(s.bgCalendar !== false, "D.settings.bgCalendar=D.settings.bgCalendar===false;commit()", 'Bulgarian holidays & name days', 'In the calendar and reminders; paydays skip public holidays')}
+      ${sw((s.training || {}).remind !== false, "D.settings.training={...(D.settings.training||{}),remind:(D.settings.training||{}).remind===false};commit()", 'Training reminders', 'On planned days and the day after a missed workout')}
+      <div class="li"><span class="t">Notifications on this device</span>${nperm === 'granted' ? '<span class="small good">✓ on</span>' : `<button class="btn sm" onclick="enableNotifications()">Turn on</button>`}</div></div></div>
+  ${syncCard}
+  <div class="card" id="sec-data"><h3>Data on this device</h3><div class="small muted" style="line-height:1.8">Everything is stored inside this app on this device. Nothing is sent anywhere unless you turn on sync.<br>Export a backup now and then — clearing the browser's site data would erase it.</div>
+    <div class="row wrap mt"><button class="btn" onclick="A.exportData()">Export backup</button><label class="btn">Import backup<input type="file" accept=".json,application/json" hidden onchange="A.importData(this)"></label><span class="sp"></span><button class="btn ghost danger" onclick="A.wipe()">Erase all data</button></div></div>
+  <div class="card" id="sec-about"><h3>About</h3><div class="small muted" style="line-height:1.9">Oracle 2 · version ${APP_VERSION}<br>Updates install themselves the next time you open the app — your data stays.<br><kbd>Ctrl K</kbd> quick add · <kbd>1</kbd>–<kbd>8</kbd> switch pages · <kbd>Esc</kbd> close<br>Long-press (phone) or right-click (PC) the app icon for shortcuts.</div>
+    <div class="row wrap mt"><button class="btn" onclick="go('help')">Open help</button><button class="btn ghost" onclick="showWhatsNew('0')">What's new</button><button class="btn ghost" onclick="A.checkUpdate()">Check for update</button></div></div></div>`;
 };
+async function renderBioRow() {
+  const el = $('#bioRow'); if (!el || !PREFS.lock || !(await bioAvailable())) return;
+  el.innerHTML = `<label class="li" style="cursor:pointer"><span class="t" style="white-space:normal">Unlock with fingerprint / face<div class="small faint">Your PIN still works as a backup</div></span><span class="switch ${PREFS.lock.cred ? 'on' : ''}" onclick="event.preventDefault();A.bioToggle()"><i></i></span></label>`;
+}
 
 // ---------------- help & welcome tour
 const HELP = [
@@ -1069,6 +1338,14 @@ const HELP = [
     <li>Set a few <b>goals</b> and how often to be reminded (Goals page).</li>
     <li>Add your <b>bills & subscriptions</b> once (Money → Bills & subscriptions). They repeat every month on the same day.</li>
     <li>Log spending as it happens — the quickest way is <b>Quick add</b>.</li></ol>`],
+  ['Where to find what', `<p>A quick map of the app — the same on phone and computer:</p>
+    <table><tr><td><b>Today</b></td><td>safe to spend, your week, upcoming (bills, birthdays, name days, holidays, catch-ups), today's training and focus</td></tr>
+    <tr><td><b>Money</b></td><td>Overview · Transactions · Bills & subscriptions (incl. yearly check-up) · Wishlist · Savings & goals · <b>Net worth</b></td></tr>
+    <tr><td><b>Gym</b></td><td>Overview · <b>Plan</b> (weekly training schedule) · Exercises · Body · History · Import</td></tr>
+    <tr><td><b>Goals</b></td><td>Goals · <b>Focus timer</b></td></tr>
+    <tr><td><b>Records</b></td><td>People (birthdays, name days, keep in touch) · Tasks & notes · <b>Media log</b></td></tr>
+    <tr><td><b>Calendar</b></td><td>everything by day, incl. Bulgarian holidays and name days</td></tr>
+    <tr><td><b>Settings</b></td><td>Appearance · Privacy & lock · Money · Reminders · Sync · Data · About — tap a chip at the top to jump</td></tr></table>`],
   ['Quick add', `<p>Press <kbd>Ctrl K</kbd> on a computer or the round <b>+</b> button on a phone, type one line, press Enter. The preview shows how it will be saved.</p>
     <table><tr><td><code>24.90 eating out pizza</code></td><td>expense (amount, category, note)</td></tr><tr><td><code>60 hobbies @savings</code></td><td>paid from savings instead of salary</td></tr><tr><td><code>15 food yesterday</code></td><td>for another day (also <code>fri</code>, <code>03.12</code>)</td></tr>
     <tr><td><code>task call bank fri</code></td><td>task with a due date</td></tr><tr><td><code>note gift idea: scarf</code></td><td>note without a date</td></tr><tr><td><code>bday Ivan 14.03</code></td><td>birthday (add the year to see ages: <code>14.03.1995</code>)</td></tr>
@@ -1086,9 +1363,38 @@ const HELP = [
     <p>Pick how often you want to be reminded — daily, weekly on a day you choose, or monthly. On that day the goal is highlighted, shows on Today, and you get a notification. <b>Check in</b> to update progress and write a short note on how it's going; your notes build a history you can look back on. Add a target date to see the countdown and get a reminder before the deadline. When you're there, press <b>★ Achieved</b>.</p>`],
   ['Monthly review', `<p>At the start of each month, <b>Today</b> shows a card: <i>Your October review is ready</i> (you also get a notification on the 1st). The review shows what you spent and saved compared with the month before, your top spending categories, new strength records, workouts and sets per muscle, weight and waist change, goals achieved and check-ins — and what's coming next month (bills, birthdays, deadlines). Open any month from Calendar → <b>Month review</b> and use ‹ › to go back in time.</p>`],
   ['Recurring tasks & renewals', `<p>For things that come back — car insurance, vignette, ID card or passport expiry, annual check-ups, filter changes — add a task with a <b>repeat</b> (every N days, weeks, months or years) and choose how early to be <b>reminded</b> (up to 3 months before). They're listed under Records → Tasks → <i>Recurring & renewals</i>. Ticking one off logs it and moves it to the next date automatically. Quick add: <code>task car insurance every year 03.12</code>.</p>`],
-  ['Calendar, records & reminders', `<p>The <b>Calendar</b> shows everything per day: ◆ workouts, − spending, + income, ▲ bills due, ✓ bills paid, ✦ birthdays, □ tasks, ◎ goal deadlines, ★ goals achieved. Tap a day for the details.</p>
-    <p><b>Records</b> holds people (birthday, relation, gift ideas) and tasks & notes.</p>
+  ['Calendar, records & reminders', `<p>The <b>Calendar</b> shows everything per day: ◆ workouts, − spending, + income, ▲ bills due, ✓ bills paid, ✦ birthdays, ✧ name days, ⚑ holidays, ◇ planned workouts, □ tasks, ◎ goal deadlines, ★ goals achieved, finished books/games/films. Tap a day for the details.</p>
+    <p><b>Records</b> holds people (birthday, name day, keep in touch, gift ideas), tasks & notes, and the media log.</p>
     <p><b>Reminders</b>: birthdays and bills at least 7 days ahead (change in Settings), the day before and on the day; a weekly summary every Monday. Turn on notifications in Settings. On Android and desktop they also arrive while the app is closed (checked a few times a day); on iPhone they show when you open the app.</p>`],
+  ['Training plan', `<p><b>Gym → Plan</b>: type a workout name for each training day (e.g. Monday <i>Push</i>, Wednesday <i>Pull</i>, Friday <i>Legs</i>) and leave rest days empty — or tap a template and adjust it. The plan syncs to all your devices.</p>
+    <ul><li><b>Today</b> shows <i>Today: Push</i> or <i>Rest day</i>; the calendar shows ◇ planned days ahead.</li><li>A planned day counts as done when a workout from that day is imported from Hevy.</li>
+    <li><b>Sticking to the plan</b> shows ✓ done, ✗ missed and ◆ extra workouts for the last 4 weeks, and your % over 7 weeks.</li>
+    <li>Reminders: on a planned day, and the morning after a missed one. Turn them off in Settings → Reminders.</li></ul>`],
+  ['Focus timer', `<p><b>Goals → Focus timer</b>. Type what you're working on (your last labels are suggested), pick the minutes — <i>Pomodoro 25</i>, <i>Long 50</i>, <i>Short 15</i> or any number — and optionally a goal it counts toward. Press <b>▶ Start</b>.</p>
+    <ul><li>It keeps counting when you switch apps or lock the phone. When time is up you hear a beep, get a notification (if on) and can start a 5/10/15 min break.</li>
+    <li><b>Pause</b>, <b>Finish & save</b> early (anything over a minute is saved) or <b>Discard</b>.</li>
+    <li>Stats: today, this week, 30 days, streak, a 14-day chart and time per label.</li>
+    <li>Goals can track hours automatically: edit a goal → <i>A number</i> → track from <i>Focus timer hours</i>, then pick that goal when starting sessions.</li></ul>`],
+  ['Keep in touch & name days', `<p>Edit a person in <b>Records → People</b>:</p>
+    <ul><li><b>Keep in touch</b>: every week, 2 weeks, month… When it's due, Today shows <i>Catch up with Ivan</i> and you get a reminder. Press <b>Talked</b> / <b>Talked today</b> to reset the clock.</li>
+    <li><b>Name day</b>: found automatically from the name for common Bulgarian names (Иван/Ivan, Мария/Maria, Георги/Georgi…). If it's not found or the family celebrates a different day, choose <i>Pick the date</i>; or <i>Doesn't celebrate</i>. Name-day traditions vary, so check the date shown once.</li></ul>
+    <p><b>Bulgarian holidays</b> (incl. Orthodox Easter and the extra day off when a holiday falls on a weekend) show in the calendar ⚑, in Upcoming, as a reminder the day before, and paydays skip them. Tap a calendar day to see whose name day it is. Turn all of this off in Settings → Reminders.</p>`],
+  ['Media log', `<p><b>Records → Media log</b> keeps books, comics, games, films and series in four lists: <i>Want to</i>, <i>In progress</i>, <i>Finished</i>, <i>Dropped</i>.</p>
+    <ul><li><b>+ Add</b> a title; press <b>Start</b> when you begin and <b>Finished</b> when done — then rate it ★1–5.</li><li>Track progress like <i>p. 120</i> or <i>S2E4</i>.</li>
+    <li>When you tick off a wishlist item you can add it to the media log in the same step.</li><li>Finished titles appear on the calendar and in your monthly review.</li></ul>`],
+  ['Net worth & investments', `<p><b>Money → Net worth</b> adds up everything you own minus what you owe: your Oracle savings (automatic) plus accounts you add — bank, ETFs, crypto, pension, property, cash — and loans or debts.</p>
+    <ul><li><b>+ Add</b> an account with its current value. Once a month press <b>Update values</b> and type today's balances — Today reminds you in the monthly review.</li>
+    <li>The chart shows net worth over time. Tap an account to see or fix its value history.</li>
+    <li><b>Track gains</b>: when you log an expense under <i>Investing</i>, choose <i>Went into account</i>. The account then shows what you put in and how much it's up or down.</li></ul>`],
+  ['Subscription check-up', `<p>Bills and subscriptions can be <b>monthly or yearly</b> (choose <i>Once a year</i> and the month). Yearly ones are reminded at least 14 days ahead.</p>
+    <ul><li>When you change the amount of a bill, the old and new price are kept — ▲/▼ shows it in the list and the edit window shows the history.</li>
+    <li>Once a year each subscription comes back in <b>Subscription check-up</b> (Money → Bills & subscriptions) with its yearly cost: <b>Keep</b> or <b>Cancel</b>. Cancelled ones stop counting and show how much you save; <i>undo</i> brings them back.</li></ul>`],
+  ['Look, privacy & app lock', `<p><b>Settings → Appearance</b> (this device only): accent colour (8 presets or any colour), background (Midnight, Pure black, Graphite, Deep navy) and text size.</p>
+    <p><b>Hide amounts</b>: the eye button at the top swaps every amount for €•••• — handy in public. <i>Hide amounts every time the app opens</i> makes it the default.</p>
+    <p><b>App lock</b> is optional and per device: Settings → Privacy & lock → <b>Set PIN</b> (4–8 digits). Choose when it locks again after you leave the app (immediately to 1 hour); the lock button at the top locks it right away. On phones you can also turn on <b>fingerprint / face</b> — the PIN still works. On a computer it's PIN only.</p>
+    <p>After 5 wrong tries you have to wait. <b>Forgot PIN?</b> — with sync on, enter your sync passphrase to remove it; without sync the only way is to erase this device's data (restore from sync or a backup afterwards). The lock keeps people out of the app; it doesn't encrypt the device.</p>`],
+  ['App-icon shortcuts', `<p>Long-press the Oracle 2 icon on your phone, or right-click it in the Windows taskbar / Start menu, for shortcuts: <b>Quick add</b>, <b>Add expense</b>, <b>Log weight</b>, <b>Import workout</b>, <b>Start focus</b>, <b>Training plan</b>.</p>
+    <p>Installed apps pick up new shortcuts after an update; if they don't show, remove the app and install it again (your data stays — it's stored by the browser, and sync brings it back anyway).</p>`],
   ['Install on phone & computer', `<p><b>Android (Chrome):</b> open the app's address → menu ⋮ → <i>Add to Home screen / Install app</i>.</p>
     <p><b>iPhone (Safari):</b> open the address → Share button → <i>Add to Home Screen</i>. Notifications need iOS 16.4 or newer.</p>
     <p><b>Windows / Mac / Linux (Edge or Chrome):</b> open the address → the install icon in the address bar (or menu → <i>Apps → Install</i>). In Edge you can also tick <i>Start automatically when I sign in</i> under <code>edge://apps</code>.</p>
@@ -1174,6 +1480,7 @@ async function tourEnd() {
 
 // ---------------- what's new (shown once on each device after an update)
 const CHANGELOG = [
+  {v: '2.5.0', items: ['Hide amounts — the eye button at the top', 'Optional app lock with a PIN per device; fingerprint / face on phones', 'Your own colours: accent, background and text size (Settings → Appearance)', 'Bulgarian holidays & name days in the calendar, Today and reminders — paydays skip holidays', 'Keep in touch: get nudged to call people you haven\'t talked to in a while', 'Focus timer (Goals → Focus timer)', 'Media log for books, games, films & series (Records → Media log)', 'Net worth & investments (Money → Net worth)', 'Subscription check-up: yearly bills, price-change history, a yearly "still using it?"', 'Training plan with fixed weekdays (Gym → Plan)', 'App-icon shortcuts: long-press / right-click the icon', 'Settings sorted into sections; Help covers everything new']},
   {v: '2.4.1', items: ['Wishlist fits phone screens: one compact row per item — coloured dot for need/want, price on the right, "fits this week" underneath, tap a name to edit']},
   {v: '2.4.0', items: ['Transactions fit your phone screen: amount up front, a coloured dot for needs/wants/savings, ↗ for paid from savings, tap a row to edit', 'All numbers are properly rounded — no more 177.45000000000002', 'Quick add: an editable preview (category, budget, paid from, day) so things are sorted right the first time, an Add button, and it remembers how you sorted a note before', 'iPhone: the ✓ above the keyboard now saves in Quick add', 'Wants limits per category with warnings at 80% and when you go over', 'Savings cover: how many months your savings last, plus your normal needs / wants / saved per pay period', 'A new guided tour (shown once on each device)', 'This "What\'s new" window after every update']},
   {v: '2.3.0', items: ['Monthly review', 'Recurring tasks & renewals with early reminders']},
@@ -1228,13 +1535,14 @@ const A = {
     modal(`<h2>${id ? 'Edit' : 'New'} expense</h2><div class="formgrid"><label class="f">Amount (€)<input type="number" step="0.01" id="ex_amt" value="${t.amount}"></label><label class="f">Date<input type="date" id="ex_date" value="${t.date}"></label>
       <label class="f">Category<select id="ex_cat" onchange="$('#ex_b').value=catBucket(this.value)">${catOptions(t.category)}</select></label><label class="f">Bucket<select id="ex_b">${['needs', 'wants', 'savings'].map(b => `<option ${(t.bucket || catBucket(t.category)) === b ? 'selected' : ''}>${b}</option>`).join('')}</select></label>
       <label class="f full">Note<input id="ex_note" value="${esc(t.note || '')}" placeholder="optional"></label>
+      ${D.assets.some(a => a.kind !== 'debt' && !a.closed) ? `<label class="f full">Went into account (net worth, optional)<select id="ex_asset"><option value="">—</option>${D.assets.filter(a => a.kind !== 'debt' && !a.closed).map(a => `<option value="${a.id}" ${t.assetId === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>` : ''}
       <div class="full"><div class="small muted" style="margin-bottom:4px">PAID FROM</div><span class="seg" id="ex_src">${['salary', 'savings'].map(s => `<button class="${t.source === s ? 'on' : ''}" onclick="this.parentNode.querySelectorAll('button').forEach(b=>b.classList.remove('on'));this.classList.add('on')">${s === 'salary' ? 'This month\'s salary' : 'Savings'}</button>`).join('')}</span></div></div>
       <div class="row mt">${id ? `<button class="btn ghost danger" onclick="A.del('transactions','${id}');closeModal()">Delete</button>` : ''}<span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.expenseSave('${id || ''}')">Save</button></div>`);
   },
   expenseSave(id) {
     const amt = r2(num(val('ex_amt'))); if (amt <= 0) return toast('Enter an amount');
     const src = $('#ex_src button.on').textContent.startsWith('Savings') ? 'savings' : 'salary';
-    const t = {id: id || uid(), amount: amt, date: val('ex_date'), category: val('ex_cat'), bucket: val('ex_b'), note: val('ex_note'), source: src};
+    const t = {id: id || uid(), amount: amt, date: val('ex_date'), category: val('ex_cat'), bucket: val('ex_b'), note: val('ex_note'), source: src, assetId: $('#ex_asset') ? val('ex_asset') : (id ? D.transactions.find(x => x.id === id).assetId || '' : '')};
     if (id) Object.assign(D.transactions.find(x => x.id === id), t); else { D.transactions.push(t); limitWarn(t.category, t.amount); }
     closeModal(); commit();
   },
@@ -1242,14 +1550,18 @@ const A = {
     const r = id ? D.recurring.find(x => x.id === id) : {type: 'bill', day: 1, category: 'Bills', amount: ''};
     modal(`<h2>${id ? 'Edit' : 'New'} bill / subscription</h2><div class="formgrid"><label class="f full">Name<input id="rc_name" value="${esc(r.name || '')}" placeholder="Electricity, Netflix…"></label>
       <label class="f">Type<select id="rc_type" onchange="$('#rc_cat').value=this.value==='subscription'?'Subscriptions':'Bills'"><option value="bill" ${r.type === 'bill' ? 'selected' : ''}>Bill</option><option value="subscription" ${r.type === 'subscription' ? 'selected' : ''}>Subscription</option></select></label>
-      <label class="f">Amount (€) — typical<input type="number" step="0.01" id="rc_amt" value="${r.amount}"></label><label class="f">Day of month due<input type="number" min="1" max="31" id="rc_day" value="${r.day}"></label>
+      <label class="f">Amount (€) — typical<input type="number" step="0.01" id="rc_amt" value="${r.amount}"></label><label class="f">Billed<select id="rc_freq" onchange="$('#rc_monw').style.display=this.value==='year'?'':'none'"><option value="month" ${r.freq !== 'year' ? 'selected' : ''}>Every month</option><option value="year" ${r.freq === 'year' ? 'selected' : ''}>Once a year</option></select></label>
+      <label class="f" id="rc_monw" style="${r.freq === 'year' ? '' : 'display:none'}">Month<select id="rc_mon">${MONTH_FULL.map((m, i) => `<option value="${i + 1}" ${(+r.month || +TODAY.slice(5, 7)) === i + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select></label>
+      <label class="f">Day of month due<input type="number" min="1" max="31" id="rc_day" value="${r.day}"></label>
       <label class="f">Category<select id="rc_cat">${catOptions(r.category)}</select></label></div>
+      ${(r.history || []).length ? `<div class="qk mt">Price changes</div><div class="list">${r.history.slice().reverse().map(h => `<div class="li small"><span class="muted" style="width:96px">${fd(h.date)} ${h.date.slice(0, 4)}</span><span class="t">${eur(h.from)} → ${eur(h.to)}</span><span class="${h.to > h.from ? 'warn' : 'good'}">${h.to > h.from ? '▲' : '▼'} ${Math.round(Math.abs(h.to - h.from) / (h.from || 1) * 100)}%</span></div>`).join('')}</div>` : ''}
       <div class="row mt">${id ? `<button class="btn ghost danger" onclick="A.del('recurring','${id}');closeModal()">Delete</button>` : ''}<span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.recurringSave('${id || ''}')">Save</button></div>`);
   },
   recurringSave(id) {
-    const r = {name: val('rc_name'), type: val('rc_type'), amount: r2(num(val('rc_amt'))), day: Math.min(31, Math.max(1, parseInt(val('rc_day')) || 1)), category: val('rc_cat'), active: true};
+    const r = {name: val('rc_name'), type: val('rc_type'), amount: r2(num(val('rc_amt'))), day: Math.min(31, Math.max(1, parseInt(val('rc_day')) || 1)), category: val('rc_cat'), freq: val('rc_freq'), month: val('rc_freq') === 'year' ? +val('rc_mon') : null};
     if (!r.name) return toast('Give it a name');
-    if (id) Object.assign(D.recurring.find(x => x.id === id), r); else D.recurring.push({id: uid(), payments: {}, startDate: TODAY.slice(0, 8) + '01', ...r});
+    if (id) { const o = D.recurring.find(x => x.id === id); if (o.amount !== r.amount && o.amount > 0) { o.history = [...(o.history || []), {date: TODAY, from: o.amount, to: r.amount}]; toast(`Price change saved: ${eur(o.amount)} → ${eur(r.amount)}`); } Object.assign(o, r); }
+    else D.recurring.push({id: uid(), payments: {}, startDate: TODAY.slice(0, 8) + '01', active: true, ...r});
     closeModal(); commit();
   },
   payBill(rid, ym) {
@@ -1314,6 +1626,7 @@ const A = {
     modal(`<h2>Bought: ${esc(w.name)}</h2><div class="formgrid"><label class="f">Price paid (€)<input type="number" step="0.01" id="wb_amt" value="${w.price}"></label><label class="f">Date<input type="date" id="wb_date" value="${TODAY}"></label>
       <label class="f">Budget<select id="wb_b"><option value="needs" ${w.bucket === 'needs' ? 'selected' : ''}>needs</option><option value="wants" ${w.bucket === 'wants' ? 'selected' : ''}>wants</option></select></label><label class="f">Category<select id="wb_cat">${catOptions(w.category || 'Shopping')}</select></label>
       <div class="full"><div class="small muted" style="margin-bottom:4px">PAID FROM</div><span class="seg" id="wb_src">${['salary', 'savings'].map(s => `<button class="${s === 'salary' ? 'on' : ''}" onclick="this.parentNode.querySelectorAll('button').forEach(b=>b.classList.remove('on'));this.classList.add('on')">${s === 'salary' ? 'This month\'s salary' : 'Savings'}</button>`).join('')}</span></div></div>
+      <label class="li small" style="cursor:pointer;margin-top:10px"><input type="checkbox" id="wb_media" onchange="$('#wb_mk').style.display=this.checked?'':'none'"><span class="t">Add to media log (book, game, film…)</span><select id="wb_mk" style="display:none">${MEDIA_KINDS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></label>
       <div class="row mt"><span class="sp"></span><button class="btn ghost" onclick="closeModal();render()">Cancel</button><button class="btn pri" onclick="A.wishBuySave('${id}')">Mark bought</button></div>`);
   },
   wishBuySave(id) {
@@ -1321,6 +1634,7 @@ const A = {
     const src = $('#wb_src button.on').textContent.startsWith('Savings') ? 'savings' : 'salary', tid = uid();
     D.transactions.push({id: tid, date: val('wb_date'), amount: amt, category: val('wb_cat'), bucket: val('wb_b'), note: w.name, source: src, wishId: id});
     Object.assign(w, {bought: true, boughtAt: val('wb_date'), paid: amt, source: src, txId: tid, bucket: val('wb_b')});
+    if ($('#wb_media').checked) D.media.push({id: uid(), added: TODAY, title: w.name, kind: val('wb_mk'), status: 'backlog', wishId: id});
     closeModal(); toast(`${w.name} · ${eur(amt)} from ${src}`); if (src === 'salary') limitWarn(val('wb_cat') || w.category, amt); commit();
   },
   wishUnbuy(id) {
@@ -1341,7 +1655,7 @@ const A = {
       <div class="full"><div class="small muted" style="margin-bottom:4px">HOW YOU MEASURE IT</div><span class="seg">${kindBtn('simple', 'Done / not done')}${kindBtn('checklist', 'Steps')}${kindBtn('number', 'A number')}</span></div>
       <label class="f full" data-gk="checklist" style="${g.kind === 'checklist' ? '' : 'display:none'}">Steps — one per line<textarea id="gg_steps" rows="5" placeholder="Buy running shoes&#10;Run 2 km&#10;Run 5 km">${esc((g.steps || []).map(s => s.text).join('\n'))}</textarea></label>
       <div class="full formgrid" data-gk="number" style="${g.kind === 'number' ? '' : 'display:none'};grid-template-columns:1fr 1fr">
-        <label class="f">Track automatically from<select id="gg_src">${[['manual', 'I\'ll enter it'], ['weight', 'Body weight log'], ['waist', 'Waist log'], ['savings', 'Savings balance']].map(([k, l]) => `<option value="${k}" ${g.source === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="f">Track automatically from<select id="gg_src">${[['manual', 'I\'ll enter it'], ['weight', 'Body weight log'], ['waist', 'Waist log'], ['savings', 'Savings balance'], ['focus', 'Focus timer hours']].map(([k, l]) => `<option value="${k}" ${g.source === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
         <label class="f">Unit<input id="gg_unit" value="${esc(g.unit || '')}" placeholder="kg, km, books…"></label>
         <label class="f">Start value<input type="number" inputmode="decimal" step="any" id="gg_start" value="${g.start ?? ''}"></label>
         <label class="f">Target value<input type="number" inputmode="decimal" step="any" id="gg_target" value="${g.target ?? ''}"></label></div>
@@ -1395,6 +1709,87 @@ const A = {
     closeModal(); toast(achieved ? `★ ${g.title} — achieved!` : 'Check-in saved'); commit();
   },
   goalDone(id) { const g = D.lifeGoals.find(x => x.id === id); g.status = 'done'; g.doneAt = TODAY; (g.log ||= []).push({date: TODAY, note: 'Achieved'}); toast(`★ ${g.title} — achieved!`); commit(); },
+  pinSet(change) {
+    modal(`<h2>${change ? 'Change' : 'Set'} PIN</h2><div class="small muted" style="margin-bottom:10px">4 to 8 digits. Only for this device — it's never synced.</div><div class="formgrid">
+      ${change ? '<label class="f full">Current PIN<input type="password" inputmode="numeric" id="pn_old" autocomplete="off"></label>' : ''}
+      <label class="f">New PIN<input type="password" inputmode="numeric" id="pn_1" autocomplete="off"></label><label class="f">Repeat new PIN<input type="password" inputmode="numeric" id="pn_2" autocomplete="off"></label></div>
+      <div class="row mt"><span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.pinSave(${change})">Save PIN</button></div>`);
+  },
+  async pinSave(change) {
+    const p1 = $('#pn_1').value, p2 = $('#pn_2').value;
+    if (change && await pinHash($('#pn_old').value, PREFS.lock.salt) !== PREFS.lock.hash) return toast('Current PIN is wrong');
+    if (!/^\d{4,8}$/.test(p1)) return toast('Use 4 to 8 digits');
+    if (p1 !== p2) return toast('The PINs don\'t match');
+    const salt = b64(rnd(16));
+    PREFS.lock = {...(PREFS.lock || {}), salt, hash: await pinHash(p1, salt), len: p1.length, after: (PREFS.lock || {}).after ?? 1, fails: 0, until: 0};
+    await savePrefs(); applyTheme(); closeModal(); toast(change ? 'PIN changed' : 'App lock on'); render();
+  },
+  pinOff() {
+    modal(`<h2>Turn off app lock</h2><label class="f">Enter your PIN<input type="password" inputmode="numeric" id="pn_old" autocomplete="off"></label><div class="row mt"><span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn danger" onclick="A.pinOffSave()">Turn off</button></div>`);
+  },
+  async pinOffSave() { if (await pinHash($('#pn_old').value, PREFS.lock.salt) !== PREFS.lock.hash) return toast('Wrong PIN'); delete PREFS.lock; await savePrefs(); applyTheme(); closeModal(); toast('App lock off'); render(); },
+  async bioToggle() {
+    if (PREFS.lock.cred) { delete PREFS.lock.cred; await savePrefs(); return render(); }
+    try {
+      const c = await navigator.credentials.create({publicKey: {challenge: rnd(32), rp: {name: 'Oracle 2', id: location.hostname}, user: {id: rnd(16), name: 'oracle2', displayName: 'Oracle 2'}, pubKeyCredParams: [{type: 'public-key', alg: -7}, {type: 'public-key', alg: -257}], authenticatorSelection: {authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged'}, timeout: 60000}});
+      PREFS.lock.cred = b64(c.rawId); await savePrefs(); toast('Fingerprint / face unlock on'); render();
+    } catch { toast('Couldn\'t set up fingerprint / face on this device'); }
+  },
+  // ---- training plan
+  trDay(i, v) { const t = D.settings.training = {...(D.settings.training || {}), days: {...trDays()}}; v = v.trim(); if (v) t.days[i] = v; else delete t.days[i]; commit(); },
+  trTemplate(i) { D.settings.training = {...(D.settings.training || {}), days: i < 0 ? {} : {...TR_TEMPLATES[i][1]}}; commit(); if (i >= 0) toast(TR_TEMPLATES[i][0] + ' set — edit any day'); },
+  // ---- keep in touch
+  talked(id) { const p = D.people.find(x => x.id === id); p.lastContact = TODAY; commit(); toast(`Noted — next nudge in ${p.keepEvery} week${p.keepEvery > 1 ? 's' : ''}`); },
+  // ---- media
+  media(id, preset) {
+    const m = id ? D.media.find(x => x.id === id) : {kind: 'book', status: 'backlog', ...(preset || {})};
+    modal(`<h2>${id ? 'Edit' : 'Add to'} media log</h2><div class="formgrid"><label class="f full">Title<input id="md_t" value="${esc(m.title || '')}" placeholder="Dune, Elden Ring, Breaking Bad…"></label>
+      <label class="f">Kind<select id="md_k">${MEDIA_KINDS.map(([k, l]) => `<option value="${k}" ${m.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="f">Status<select id="md_s">${MEDIA_ST.map(([k, l]) => `<option value="${k}" ${m.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="f">Author / studio (optional)<input id="md_c" value="${esc(m.creator || '')}"></label><label class="f">Progress (optional)<input id="md_p" value="${esc(m.progress || '')}" placeholder="p. 120, S2E4, 40%…"></label>
+      <label class="f">Started<input type="date" id="md_sd" value="${m.started || ''}"></label><label class="f">Finished<input type="date" id="md_fd" value="${m.finished || ''}"></label>
+      <div class="full"><div class="small muted" style="margin-bottom:4px">RATING</div><span class="seg" id="md_r">${[0, 1, 2, 3, 4, 5].map(n => `<button class="${(+m.rating || 0) === n ? 'on' : ''}" onclick="this.parentNode.querySelectorAll('button').forEach(b=>b.classList.remove('on'));this.classList.add('on')" data-n="${n}">${n ? '★'.repeat(n) : '—'}</button>`).join('')}</span></div>
+      <label class="f full">Notes<input id="md_n" value="${esc(m.notes || '')}" placeholder="thoughts, who recommended it…"></label></div>
+      <div class="row mt">${id ? `<button class="btn ghost danger" onclick="A.del('media','${id}');closeModal()">Delete</button>` : ''}<span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.mediaSave('${id || ''}')">Save</button></div>`);
+  },
+  mediaSave(id) {
+    const st = val('md_s'), m = {title: val('md_t'), kind: val('md_k'), status: st, creator: val('md_c'), progress: val('md_p'), started: val('md_sd') || (st === 'active' || st === 'done' ? TODAY : ''), finished: val('md_fd') || (st === 'done' ? TODAY : ''), rating: +($('#md_r button.on') || {dataset: {n: 0}}).dataset.n, notes: val('md_n')};
+    if (!m.title) return toast('Give it a title');
+    if (id) Object.assign(D.media.find(x => x.id === id), m); else D.media.push({id: uid(), added: TODAY, ...m});
+    UI.mediaSt = st; closeModal(); commit();
+  },
+  mediaStart(id) { Object.assign(D.media.find(x => x.id === id), {status: 'active', started: TODAY}); UI.mediaSt = 'active'; commit(); },
+  mediaDone(id) { const m = D.media.find(x => x.id === id); Object.assign(m, {status: 'done', finished: TODAY}); commit(); A.media(id); toast('Finished — rate it?'); },
+  // ---- net worth
+  asset(id) {
+    const a = id ? D.assets.find(x => x.id === id) : {kind: 'bank', values: []}, hist = (a.values || []).slice().sort((x, y) => x.date < y.date ? 1 : -1);
+    modal(`<h2>${id ? 'Edit' : 'New'} account</h2><div class="formgrid"><label class="f full">Name<input id="as_n" value="${esc(a.name || '')}" placeholder="Revolut, Trading 212 ETFs, car loan…"></label>
+      <label class="f">Kind<select id="as_k">${ASSET_KINDS.map(([k, l]) => `<option value="${k}" ${a.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="f">${id ? 'Value today' : 'Current value'} (€)<input type="number" inputmode="decimal" step="0.01" id="as_v" value="${id ? '' : ''}" placeholder="${id ? eur(assetVal(a)).replace('€', '') : '0.00'}"></label>
+      <label class="f full">Note<input id="as_note" value="${esc(a.note || '')}"></label></div>
+      ${hist.length ? `<div class="qk mt">History</div><div class="list" style="max-height:160px;overflow:auto">${hist.map(v => `<div class="li small"><span class="muted" style="width:96px">${fd(v.date)} ${v.date.slice(0, 4)}</span><span class="t">${eur(+v.value)}</span><button class="btn sm ghost danger" onclick="A.assetValDel('${a.id}','${v.date}')">×</button></div>`).join('')}</div>` : ''}
+      <div class="row mt">${id ? `<button class="btn ghost danger" onclick="if(confirm('Delete this account and its history?')){A.del('assets','${id}');closeModal()}">Delete</button>` : ''}<span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.assetSave('${id || ''}')">Save</button></div>`);
+  },
+  assetSave(id) {
+    const a = {name: val('as_n'), kind: val('as_k'), note: val('as_note')}, v = val('as_v'); if (!a.name) return toast('Give it a name');
+    let x = id ? Object.assign(D.assets.find(q => q.id === id), a) : (D.assets.push({id: uid(), values: [], ...a}), D.assets[D.assets.length - 1]);
+    if (v !== '') { x.values = (x.values || []).filter(q => q.date !== TODAY); x.values.push({date: TODAY, value: r2(num(v))}); }
+    closeModal(); commit();
+  },
+  assetValDel(id, d) { const a = D.assets.find(x => x.id === id); a.values = a.values.filter(v => v.date !== d); save(); A.asset(id); },
+  assetUpdate() {
+    const as = D.assets.filter(a => !a.closed); if (!as.length) return A.asset();
+    modal(`<h2>Update values · ${fd(TODAY)}</h2><div class="small muted" style="margin-bottom:10px">Type today's balance. Leave empty to keep the last value.</div><div class="formgrid">${as.map(a => `<label class="f">${esc(a.name)}${a.kind === 'debt' ? ' (owed)' : ''}<input type="number" inputmode="decimal" step="0.01" data-aid="${a.id}" placeholder="${eur(assetVal(a)).replace('€', '')}"></label>`).join('')}</div>
+      <div class="row mt"><span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.assetUpdateSave()">Save</button></div>`);
+  },
+  assetUpdateSave() {
+    let n = 0; document.querySelectorAll('[data-aid]').forEach(i => { if (i.value === '') return; const a = D.assets.find(x => x.id === i.dataset.aid); a.values = (a.values || []).filter(v => v.date !== TODAY); a.values.push({date: TODAY, value: r2(num(i.value))}); n++; });
+    closeModal(); commit(); toast(n ? `${n} value${n > 1 ? 's' : ''} updated · net worth ${eur0(netWorth())}` : 'Nothing changed');
+  },
+  // ---- subscription check-up
+  subKeep(id) { D.recurring.find(x => x.id === id).reviewed = TODAY; commit(); toast('Kept — asking again in a year'); },
+  subCancel(id) { const r = D.recurring.find(x => x.id === id); if (!confirm(`Cancel ${r.name}? It stops showing up as a bill. (Remember to cancel it with the provider too.)`)) return; Object.assign(r, {active: false, cancelledAt: TODAY}); commit(); toast(`${r.name} cancelled — saves ${eur0(perYear(r))} a year`); },
+  subResume(id) { const r = D.recurring.find(x => x.id === id); Object.assign(r, {active: true, cancelledAt: null, reviewed: TODAY}); commit(); },
   limits() {
     const L = D.settings.limits || {}, wants = D.settings.categories.filter(c => c.bucket === 'wants'), st = limitStats();
     modal(`<h2>Wants limits</h2><div class="small muted" style="margin-bottom:10px">Monthly cap per wants category. Leave empty for no limit. Spending counts from payday to payday (salary only) and starts fresh each pay period; the limits themselves stay until you change them.</div>
@@ -1409,12 +1804,18 @@ const A = {
     const p = id ? D.people.find(x => x.id === id) : {};
     modal(`<h2>${id ? 'Edit' : 'New'} person</h2><div class="formgrid"><label class="f">Name<input id="pp_name" value="${esc(p.name || '')}"></label><label class="f">Relation<input id="pp_rel" value="${esc(p.relation || '')}" placeholder="friend, mum, cousin…"></label>
       <label class="f">Birthday<input type="date" id="pp_bd" value="${/^\d{4}/.test(p.birthday || '') ? p.birthday : ''}"></label><label class="f">…or just day.month (year unknown)<input id="pp_bd2" placeholder="14.03" value="${p.birthday && p.birthday.startsWith('--') ? p.birthday.slice(8) + '.' + p.birthday.slice(5, 7) : ''}"></label>
+      <label class="f">Name day<select id="pp_nd" onchange="$('#pp_ndd').style.display=this.value==='date'?'':'none'"><option value="auto" ${!p.nameDay ? 'selected' : ''}>Automatic from the name${p.name && !p.nameDay ? (n => n ? ' — ' + fd(n.date) : ' — not found')(BG.nameDay(p.name, +TODAY.slice(0, 4))) : ''}</option><option value="date" ${/^\d/.test(p.nameDay || '') ? 'selected' : ''}>Pick the date</option><option value="none" ${p.nameDay === 'none' ? 'selected' : ''}>Doesn't celebrate</option></select></label>
+      <label class="f" id="pp_ndd" style="${/^\d/.test(p.nameDay || '') ? '' : 'display:none'}">Name day (day.month)<input id="pp_ndv" placeholder="07.01" value="${/^\d/.test(p.nameDay || '') ? p.nameDay.slice(3) + '.' + p.nameDay.slice(0, 2) : ''}"></label>
+      <label class="f">Keep in touch<select id="pp_keep">${[[0, 'No reminder'], [1, 'Every week'], [2, 'Every 2 weeks'], [4, 'Every month'], [8, 'Every 2 months'], [13, 'Every 3 months'], [26, 'Every 6 months']].map(([v, l]) => `<option value="${v}" ${(+p.keepEvery || 0) === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="f">Last talked (optional)<input type="date" id="pp_last" value="${p.lastContact || ''}"></label>
       <label class="f full">Gift ideas<input id="pp_gift" value="${esc(p.gifts || '')}"></label><label class="f full">Notes<input id="pp_notes" value="${esc(p.notes || '')}"></label></div>
       <div class="row mt">${id ? `<button class="btn ghost danger" onclick="A.del('people','${id}');closeModal()">Delete</button>` : ''}<span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.personSave('${id || ''}')">Save</button></div>`);
   },
   personSave(id) {
     let bd = val('pp_bd'); const m = val('pp_bd2').match(/^(\d{1,2})[./-](\d{1,2})$/); if (!bd && m) bd = `--${pad(m[2])}-${pad(m[1])}`;
-    const p = {name: val('pp_name'), relation: val('pp_rel'), birthday: bd, gifts: val('pp_gift'), notes: val('pp_notes')}; if (!p.name) return toast('Name needed');
+    const nd = val('pp_nd'), ndm = val('pp_ndv').match(/^(\d{1,2})[./-](\d{1,2})$/), keep = +val('pp_keep') || 0, old = id ? D.people.find(x => x.id === id) : {};
+    if (nd === 'date' && !ndm) return toast('Name day as day.month, e.g. 07.01');
+    const p = {name: val('pp_name'), relation: val('pp_rel'), birthday: bd, gifts: val('pp_gift'), notes: val('pp_notes'), nameDay: nd === 'none' ? 'none' : nd === 'date' ? `${pad(ndm[2])}-${pad(ndm[1])}` : '', keepEvery: keep, lastContact: val('pp_last') || old.lastContact || '', keepSince: keep && !old.keepEvery ? TODAY : (old.keepSince || '')}; if (!p.name) return toast('Name needed');
     if (id) Object.assign(D.people.find(x => x.id === id), p); else D.people.push({id: uid(), ...p}); closeModal(); commit();
   },
   task(id, date, preset) {
@@ -1620,9 +2021,10 @@ function qaGo() {
 const CRUMB = {today: 'TODAY', money: 'MONEY', gym: 'GYM', goals: 'GOALS', records: 'RECORDS', calendar: 'CALENDAR', settings: 'SETTINGS', help: 'HELP', review: 'MONTH REVIEW'};
 function render() {
   document.querySelectorAll('[data-view]').forEach(a => a.classList.toggle('on', a.dataset.view === UI.view));
-  const sub = UI.view === 'money' ? ' // ' + ({tx: 'TRANSACTIONS', wish: 'WISHLIST'}[UI.moneyTab] || UI.moneyTab.toUpperCase()) : UI.view === 'gym' ? ' // ' + (UI.gymTab === 'progress' ? 'EXERCISES' : UI.gymTab.toUpperCase()) : '';
+  const sub = UI.view === 'money' ? ' // ' + ({tx: 'TRANSACTIONS', wish: 'WISHLIST', networth: 'NET WORTH'}[UI.moneyTab] || UI.moneyTab.toUpperCase()) : UI.view === 'gym' ? ' // ' + (UI.gymTab === 'progress' ? 'EXERCISES' : UI.gymTab.toUpperCase()) : UI.view === 'goals' && UI.goalsTab === 'focus' ? ' // FOCUS' : UI.view === 'records' ? ' // ' + {people: 'PEOPLE', tasks: 'TASKS', media: 'MEDIA'}[UI.recTab] : '';
   $('#crumb').textContent = `> DECODING // ${CRUMB[UI.view]}${sub}`;
   const sc = $('#view').scrollTop; $('#view').innerHTML = V[UI.view](); $('#view').scrollTop = sc;
+  if (UI.view === 'settings') renderBioRow();
   const p = currentPeriod(), segs = 22, done = p ? Math.round(Math.min(1, (diff(p.start, TODAY) + 1) / (diff(p.start, p.end) + 1)) * segs) : 0;
   $('#segs').innerHTML = [...Array(segs)].map((_, i) => `<i class="${i < done - 1 ? 'on' : i === done - 1 ? 'hi' : ''}"></i>`).join('');
   $('#segs').title = p ? `Pay period: day ${diff(p.start, TODAY) + 1} of ${diff(p.start, p.end) + 1}` : '';
@@ -1663,6 +2065,16 @@ async function registerSW() {
   } catch (e) { console.warn('SW', e); }
 }
 
+// ---- app-icon shortcuts (long-press the icon on a phone, right-click it on PC): ?do=…
+function takeShortcut() {
+  const d = qs.get('do'); if (!d) return null;
+  history.replaceState(null, '', location.pathname);
+  if (d === 'import') { UI.view = 'gym'; UI.gymTab = 'import'; } else if (d === 'plan') { UI.view = 'gym'; UI.gymTab = 'plan'; } else if (d === 'focus') { UI.view = 'goals'; UI.goalsTab = 'focus'; }
+  else if (d === 'networth') { UI.view = 'money'; UI.moneyTab = 'networth'; }
+  return d;
+}
+function runShortcut(d) { if (!d) return; setTimeout(() => { if (d === 'quick') quickAdd(); else if (d === 'expense') A.expense(); else if (d === 'weight') A.bodyLog(); }, 300); }
+
 // ---- things shared into the app (Hevy → Share → Oracle 2 on Android)
 function handleShare() {
   if (!qs.has('text') && !qs.has('url') && !qs.has('share')) return;
@@ -1675,14 +2087,15 @@ function handleShare() {
 
 // refresh at midnight so "today" is never stale; keep sync & reminders going while open
 let lastDay = iso(new Date());
-setInterval(() => { tick(); if (!qs.get('date') && iso(new Date()) !== lastDay && $('#modal').classList.contains('hidden')) location.reload(); }, 1000);
+setInterval(() => { tick(); focusTick(); if (!FOCUS && !qs.get('date') && iso(new Date()) !== lastDay && $('#modal').classList.contains('hidden')) location.reload(); }, 1000);
 setInterval(() => { syncNow(); checkReminders(); }, 3 * 60e3);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') syncNow(); });
 addEventListener('online', () => syncNow());
 if (qs.get('view')) UI.view = qs.get('view');
-['moneyTab', 'gymTab', 'recTab'].forEach(k => qs.get(k) && (UI[k] = qs.get(k)));
-loadData().then(async () => {
-  tick(); handleShare(); render();
+['moneyTab', 'gymTab', 'recTab', 'goalsTab'].forEach(k => qs.get(k) && (UI[k] = qs.get(k)));
+(async () => { await loadPrefs(); await loadData(); FOCUS = (await store.get('focusRun')) || null; })().then(async () => {
+  tick(); handleShare(); const sc = takeShortcut(); render(); applyTheme();
+  if (PREFS.lock) { lockNow(); UI.pendingDo = sc; } else runShortcut(sc);
   afterStart();
   registerSW(); await syncNow();
   checkReminders();

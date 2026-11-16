@@ -9,19 +9,110 @@
   "orientation": "any",
   "background_color": "#0b0b0d",
   "theme_color": "#0b0b0d",
-  "categories": ["finance", "health", "productivity"],
+  "categories": [
+    "finance",
+    "health",
+    "productivity"
+  ],
   "icons": [
-    {"src": "icon-192.png", "sizes": "192x192", "type": "image/png"},
-    {"src": "icon-512.png", "sizes": "512x512", "type": "image/png"},
-    {"src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ],
   "share_target": {
     "action": "./",
     "method": "GET",
-    "params": {"title": "title", "text": "text", "url": "url"}
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
   },
   "shortcuts": [
-    {"name": "Money", "url": "./?view=money", "icons": [{"src": "icon-192.png", "sizes": "192x192"}]},
-    {"name": "Gym", "url": "./?view=gym", "icons": [{"src": "icon-192.png", "sizes": "192x192"}]}
+    {
+      "name": "Quick add",
+      "short_name": "Quick add",
+      "description": "Type anything: 12 food, gym, task…",
+      "url": "./?do=quick",
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Add expense",
+      "short_name": "Add expense",
+      "description": "Log what you spent",
+      "url": "./?do=expense",
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Log weight",
+      "short_name": "Log weight",
+      "description": "Weight / waist",
+      "url": "./?do=weight",
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Import workout",
+      "short_name": "Import workout",
+      "description": "Paste from Hevy",
+      "url": "./?do=import",
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Start focus",
+      "short_name": "Start focus",
+      "description": "Focus timer",
+      "url": "./?do=focus",
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "Training plan",
+      "short_name": "Training plan",
+      "description": "Today's workout",
+      "url": "./?do=plan",
+      "icons": [
+        {
+          "src": "icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
   ]
 }

@@ -35,7 +35,7 @@
 <main>
   <header id="top">
     <div class="crumb" id="crumb">&gt; DECODING // TODAY</div>
-    <div class="tx"><span class="segs" id="segs"></span><span id="clock">TX 00:00:00</span><a class="topbtn" data-view="settings" aria-label="Settings">⚙&#xFE0E;</a><a class="topbtn" data-view="help" aria-label="Help">?</a></div>
+    <div class="tx"><span class="segs" id="segs"></span><span id="clock">TX 00:00:00</span><button class="hdrbtn" id="hideBtn" onclick="toggleHide()" aria-label="Hide amounts"></button><button class="hdrbtn" id="lockBtn" onclick="lockNow()" aria-label="Lock" title="Lock now" style="display:none"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></button><a class="topbtn" data-view="settings" aria-label="Settings">⚙&#xFE0E;</a><a class="topbtn" data-view="help" aria-label="Help">?</a></div>
   </header>
   <section id="view"></section>
 </main>
