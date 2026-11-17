@@ -269,17 +269,24 @@ nav a .ico{display:none}
 .secnav{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
 .secnav a{font-size:11px;padding:5px 10px;border:1px solid var(--line2);border-radius:14px;color:var(--muted);cursor:pointer}.secnav a:hover{color:var(--text);border-color:var(--accent-dim)}
 [id^=sec-]{scroll-margin-top:12px}
-/* lock screen */
-#lockLayer{position:fixed;inset:0;z-index:120;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:20px}
-.lockbox{text-align:center;width:min(320px,92vw);color:var(--text)}
-.pindots{display:flex;gap:12px;justify-content:center;margin:20px 0}
-.pindots i{width:12px;height:12px;border-radius:50%;border:1.5px solid var(--muted)}.pindots i.on{background:var(--accent);border-color:var(--accent)}
-.pindots.shake{animation:shake .35s}
-@keyframes shake{25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
-.pinpad{display:grid;grid-template-columns:repeat(3,72px);gap:12px;justify-content:center}
-.pinpad button{height:72px;border-radius:50%;border:1px solid var(--line2);background:var(--panel);color:var(--text);font:22px var(--mono);cursor:pointer;display:flex;align-items:center;justify-content:center}
-.pinpad button:active{background:color-mix(in srgb,var(--accent) 18%,var(--panel))}
-
+/* lock screen: header in the upper part, keypad in thumb reach, keys spread across the width */
+#lockLayer{position:fixed;inset:0;z-index:120;background:var(--bg);display:flex;justify-content:center;touch-action:manipulation;-webkit-user-select:none;user-select:none}
+.lockbox{--k:min(84px,22vw,11.5vh);display:flex;flex-direction:column;align-items:center;width:min(380px,100%);height:100%;padding:max(28px,env(safe-area-inset-top)) 24px max(18px,env(safe-area-inset-bottom));color:var(--text);text-align:center}
+.lockhead{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:170px}
+.pindots{display:flex;gap:16px;justify-content:center;margin-top:22px;height:14px}
+.pindots i{width:13px;height:13px;border-radius:50%;border:1.5px solid var(--muted);transition:background .12s,border-color .12s,transform .12s}
+.pindots i.on{background:var(--accent);border-color:var(--accent);transform:scale(1.1)}
+.pindots.shake{animation:shake .38s}
+@keyframes shake{20%,60%{transform:translateX(-9px)}40%,80%{transform:translateX(9px)}}
+.pinpad{display:grid;grid-template-columns:repeat(3,var(--k));justify-content:space-between;row-gap:max(12px,2.2vh);width:100%;max-width:330px}
+.pk{width:var(--k);height:var(--k);border-radius:50%;border:1px solid var(--line2);background:var(--panel);color:var(--text);font:calc(var(--k)*.36) var(--mono);cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;transition:background .1s,transform .1s;-webkit-tap-highlight-color:transparent}
+.pk.fn{background:transparent;border-color:transparent;color:var(--muted)}
+.pk:hover{border-color:var(--accent-dim)}
+.pk.down,.pk:active{background:color-mix(in srgb,var(--accent) 26%,var(--panel));transform:scale(.93)}
+.pk.fn.down,.pk.fn:active{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.lockfoot{padding-top:max(14px,2.4vh)}.lockfoot a{font-size:13px;color:var(--faint);cursor:pointer;padding:8px 12px}
+.lockbox.forgotmode{justify-content:center;align-items:stretch;text-align:left}
+@media (min-width:761px){.lockbox{--k:74px;height:auto;align-self:center;padding:36px 24px}.lockhead{flex:none;min-height:0;margin-bottom:28px}.pinpad{max-width:290px}}
 /* v2.5 features */
 .trc{display:inline-flex;width:26px;height:26px;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:6px;font-size:12px}
 .focusbox{text-align:center;padding:6px 0}

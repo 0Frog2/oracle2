@@ -61,8 +61,8 @@ function parseDateWord(w) {
 }
 
 // ------------------------------------------------------------------ data, storage & sync
-const APP_VERSION = '2.5.0', DATA_VERSION = 2;
-const COLLS = ['lifeGoals', 'wishlist', 'people', 'tasks', 'paychecks', 'transactions', 'savingsMoves', 'recurring', 'goals', 'workouts', 'body', 'focus', 'media', 'assets'];
+const APP_VERSION = '2.6.0', DATA_VERSION = 2;
+const COLLS = ['lifeGoals', 'wishlist', 'people', 'tasks', 'paychecks', 'transactions', 'savingsMoves', 'recurring', 'goals', 'workouts', 'body', 'focus', 'media', 'assets', 'gifts'];
 let D = null, saveTimer = null, SNAP = {}, SYNC = null, NOTIFIED = {};
 const UI = {view: 'today', moneyTab: 'overview', gymTab: 'overview', recTab: 'people', calMonth: TODAY.slice(0, 7), calSel: TODAY, gymEx: null, txFilter: 'period', search: '', importPreview: null, sync: {state: 'off', msg: ''}};
 
@@ -84,15 +84,15 @@ const store = {
 
 function defaults() {
   return {version: DATA_VERSION, settings: {split: {needs: 50, wants: 30, savings: 20}, reminderDays: 7, startingSavings: 0, gymGoal: {weightMin: 0, weightMax: 0}, onboarded: false, limits: {}, bgCalendar: true, training: {days: {}, remind: true}, focusLabels: [],
-    categories: [['Bills', 'needs'], ['Subscriptions', 'needs'], ['Food', 'needs'], ['Transport', 'needs'], ['Health', 'needs'], ['Eating out', 'wants'], ['Entertainment', 'wants'], ['Hobbies', 'wants'], ['Shopping', 'wants'], ['Investing', 'savings'], ['Other', 'wants']].map(([name, bucket]) => ({name, bucket}))},
-    lifeGoals: [], wishlist: [], people: [], tasks: [], paychecks: [], transactions: [], savingsMoves: [], recurring: [], goals: [], workouts: [], body: [], focus: [], media: [], assets: [], meta: {tomb: {}, settingsU: {}}};
+    categories: [['Bills', 'needs'], ['Subscriptions', 'needs'], ['Food', 'needs'], ['Transport', 'needs'], ['Health', 'needs'], ['Eating out', 'wants'], ['Entertainment', 'wants'], ['Hobbies', 'wants'], ['Gifts', 'wants'], ['Shopping', 'wants'], ['Investing', 'savings'], ['Other', 'wants']].map(([name, bucket]) => ({name, bucket}))},
+    lifeGoals: [], wishlist: [], people: [], tasks: [], paychecks: [], transactions: [], savingsMoves: [], recurring: [], goals: [], workouts: [], body: [], focus: [], media: [], assets: [], gifts: [], meta: {tomb: {}, settingsU: {}}};
 }
 // Upgrades older saved data so updates never lose anything. Add a step here whenever the format changes.
 function migrate(d) {
   const def = defaults();
   for (const k of COLLS) d[k] ||= [];
   d.settings = {...def.settings, ...(d.settings || {})};
-  d.settings.gymGoal ||= def.settings.gymGoal; d.settings.split ||= def.settings.split; d.settings.limits ||= {}; d.settings.training ||= {days: {}, remind: true}; d.settings.training.days ||= {}; d.settings.focusLabels ||= [];
+  d.settings.gymGoal ||= def.settings.gymGoal; d.settings.split ||= def.settings.split; d.settings.limits ||= {}; if (!d.settings.giftsCat) { d.settings.giftsCat = 1; if (!d.settings.categories.some(c => c.name.toLowerCase() === 'gifts')) { const i = d.settings.categories.findIndex(c => c.name === 'Hobbies'); d.settings.categories.splice(i < 0 ? d.settings.categories.length : i + 1, 0, {name: 'Gifts', bucket: 'wants'}); d.meta ||= {}; d.meta.settingsU ||= {}; d.meta.settingsU.categories = Date.now(); } } d.settings.training ||= {days: {}, remind: true}; d.settings.training.days ||= {}; d.settings.focusLabels ||= [];
   d.meta ||= {}; d.meta.tomb ||= {}; if (typeof d.meta.settingsU !== 'object' || !d.meta.settingsU) d.meta.settingsU = {}; delete d.meta.notified;
   if ((d.version || 1) < 2) { /* v1 → v2: nothing to convert, records get sync stamps on first save */ }
   d.version = DATA_VERSION;
@@ -270,37 +270,51 @@ async function pinHash(pin, salt) { const k = await crypto.subtle.importKey('raw
 const isPhone = () => /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 async function bioAvailable() { try { return isPhone() && !!window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(); } catch { return false; } }
 let pinBuf = '';
-function lockNow() { if (!PREFS.lock) return; LOCKED = true; pinBuf = ''; closeModal(); showLock(); }
+function lockNow() { if (!PREFS.lock) return; LOCKED = true; pinBuf = ''; closeModal(); showLock(); if (PREFS.lock.cred && document.visibilityState === 'visible') setTimeout(bioUnlock, 350); }
+// The lock screen is drawn once; key presses only update the dots and the message.
+let lockTimer = 0;
 function showLock(msg) {
   let l = $('#lockLayer'); if (!l) { l = document.createElement('div'); l.id = 'lockLayer'; document.body.appendChild(l); }
-  const wait = Math.max(0, Math.ceil(((PREFS.lock.until || 0) - Date.now()) / 1000));
-  l.innerHTML = `<div class="lockbox"><svg viewBox="0 0 32 32" width="38" height="38"><circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="2.4"/><circle cx="16" cy="16" r="4.2" fill="var(--accent)"/><path d="M16 1v5M16 26v5M1 16h5M26 16h5" stroke="currentColor" stroke-width="2"/></svg>
-    <div class="crumb" style="margin:14px 0 6px">&gt; ORACLE 2 // LOCKED</div><div class="small muted" id="lockMsg">${msg || (wait ? `Too many tries — wait ${wait}s` : 'Enter your PIN')}</div>
-    <div class="pindots">${[...Array(PREFS.lock.len || 4)].map((_, i) => `<i class="${i < pinBuf.length ? 'on' : ''}"></i>`).join('')}</div>
-    <div class="pinpad">${['1', '2', '3', '4', '5', '6', '7', '8', '9', PREFS.lock.cred ? 'bio' : '', '0', 'del'].map(k => k ? `<button type="button" onclick="pinKey('${k}')" ${k === 'bio' ? 'title="Fingerprint / face"' : ''}>${k === 'del' ? '⌫' : k === 'bio' ? '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 11v3m-4-3a4 4 0 0 1 8 0v1.5M5.5 9a7 7 0 0 1 13 0M8 17.5c.6-1 1-2.6 1-4.5m6 1.5c0 2-.4 3.4-1 4.5M3 13c0-1 .1-2 .4-3m17.2 0c.3 1 .4 2 .4 3"/></svg>' : k}</button>` : '<span></span>').join('')}</div>
-    <a class="small faint" style="cursor:pointer;margin-top:14px;display:inline-block" onclick="forgotPin()">Forgot PIN?</a></div>`;
+  const KEY = (k, inner, lbl) => `<button type="button" class="pk${k === 'del' || k === 'bio' ? ' fn' : ''}" data-k="${k}" aria-label="${lbl || k}">${inner || k}</button>`;
+  const BIO = '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 11v3m-4-3a4 4 0 0 1 8 0v1.5M5.5 9a7 7 0 0 1 13 0M8 17.5c.6-1 1-2.6 1-4.5m6 1.5c0 2-.4 3.4-1 4.5M3 13c0-1 .1-2 .4-3m17.2 0c.3 1 .4 2 .4 3"/></svg>';
+  const DEL = '<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 5H9l-6 7 6 7h12z"/><path d="M17 9l-6 6m0-6l6 6"/></svg>';
+  l.innerHTML = `<div class="lockbox"><div class="lockhead"><svg viewBox="0 0 32 32" width="40" height="40"><circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="2.4"/><circle cx="16" cy="16" r="4.2" fill="var(--accent)"/><path d="M16 1v5M16 26v5M1 16h5M26 16h5" stroke="currentColor" stroke-width="2"/></svg>
+      <div class="crumb" style="margin:14px 0 8px">&gt; ORACLE 2 // LOCKED</div><div class="small muted" id="lockMsg"></div>
+      <div class="pindots" id="pinDots">${[...Array(PREFS.lock.len || 4)].map(() => '<i></i>').join('')}</div></div>
+    <div class="pinpad" id="pinPad">${['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(k => KEY(k)).join('')}${PREFS.lock.cred ? KEY('bio', BIO, 'Fingerprint or face') : '<span></span>'}${KEY('0')}${KEY('del', DEL, 'Delete')}</div>
+    <div class="lockfoot"><a onclick="forgotPin()">Forgot PIN?</a></div></div>`;
+  $('#pinPad').addEventListener('pointerdown', e => { const b = e.target.closest('.pk'); if (!b) return; e.preventDefault(); b.classList.add('down'); setTimeout(() => b.classList.remove('down'), 140); try { navigator.vibrate?.(8); } catch {} pinKey(b.dataset.k); });
+  lockMsg(msg);
 }
+function lockMsg(msg) {
+  const el = $('#lockMsg'); if (!el) return; clearInterval(lockTimer);
+  const upd = () => { const w = Math.ceil(((PREFS.lock?.until || 0) - Date.now()) / 1000); if (w > 0) { el.textContent = `Too many tries — wait ${w}s`; el.className = 'small bad'; } else { clearInterval(lockTimer); el.textContent = msg || 'Enter your PIN'; el.className = 'small ' + (msg ? 'warn' : 'muted'); msg = ''; } };
+  upd(); if ((PREFS.lock?.until || 0) > Date.now()) lockTimer = setInterval(upd, 500);
+}
+function pinDots(shake) { const d = $('#pinDots'); if (!d) return; [...d.children].forEach((i, n) => i.classList.toggle('on', n < pinBuf.length)); if (shake) { d.classList.remove('shake'); void d.offsetWidth; d.classList.add('shake'); } }
+let pinBusy = false;
 async function pinKey(k) {
+  if (!LOCKED || pinBusy) return;
   if (k === 'bio') return bioUnlock();
-  if (Date.now() < (PREFS.lock.until || 0)) return showLock();
+  if (Date.now() < (PREFS.lock.until || 0)) return;
   if (k === 'del') pinBuf = pinBuf.slice(0, -1); else if (pinBuf.length < 8) pinBuf += k;
-  showLock();
-  if (pinBuf.length === (PREFS.lock.len || 4)) {
-    const ok = await pinHash(pinBuf, PREFS.lock.salt) === PREFS.lock.hash; pinBuf = '';
-    if (ok) { PREFS.lock.fails = 0; savePrefs(); return unlock(); }
-    PREFS.lock.fails = (PREFS.lock.fails || 0) + 1;
-    if (PREFS.lock.fails >= 5) PREFS.lock.until = Date.now() + 30e3 * 2 ** (PREFS.lock.fails - 5);
-    savePrefs(); showLock(PREFS.lock.fails >= 5 ? `Too many tries — wait ${Math.round(30 * 2 ** (PREFS.lock.fails - 5))}s` : 'Wrong PIN — try again');
-    $('#lockLayer .pindots')?.classList.add('shake');
-  }
+  pinDots();
+  if (pinBuf.length !== (PREFS.lock.len || 4)) return;
+  pinBusy = true; const ok = await pinHash(pinBuf, PREFS.lock.salt) === PREFS.lock.hash; pinBusy = false; pinBuf = '';
+  if (ok) { PREFS.lock.fails = 0; PREFS.lock.until = 0; savePrefs(); return unlock(); }
+  PREFS.lock.fails = (PREFS.lock.fails || 0) + 1;
+  if (PREFS.lock.fails >= 5) PREFS.lock.until = Date.now() + 30e3 * 2 ** (PREFS.lock.fails - 5);
+  savePrefs(); pinDots(true); try { navigator.vibrate?.([30, 40, 30]); } catch {}
+  lockMsg(PREFS.lock.fails >= 5 ? '' : `Wrong PIN — ${5 - PREFS.lock.fails} ${5 - PREFS.lock.fails === 1 ? 'try' : 'tries'} before a short wait`);
 }
-function unlock() { LOCKED = false; $('#lockLayer')?.remove(); render(); if (UI.pendingDo) { runShortcut(UI.pendingDo); UI.pendingDo = null; } }
+function unlock() { LOCKED = false; clearInterval(lockTimer); $('#lockLayer')?.remove(); render(); if (UI.pendingDo) { runShortcut(UI.pendingDo); UI.pendingDo = null; } }
 async function bioUnlock() {
+  if (!LOCKED || !PREFS.lock?.cred) return;
   try { await navigator.credentials.get({publicKey: {challenge: rnd(32), allowCredentials: [{type: 'public-key', id: ub64(PREFS.lock.cred)}], userVerification: 'required', timeout: 60000}}); unlock(); }
-  catch { showLock('Fingerprint / face not recognised — use your PIN'); }
+  catch { lockMsg('Use your PIN, or tap the fingerprint key to try again'); }
 }
 function forgotPin() {
-  const box = $('#lockLayer .lockbox');
+  const box = $('#lockLayer .lockbox'); box.classList.add('forgotmode');
   box.innerHTML = SYNC ? `<h2 class="acc" style="font-size:13px;letter-spacing:.08em">FORGOT PIN</h2><div class="small muted" style="margin:8px 0 12px;line-height:1.7">Enter your <b>sync passphrase</b> to remove the PIN from this device. You can set a new one in Settings.</div>
       <input type="password" id="fpPass" style="width:100%" placeholder="Sync passphrase"><div class="row mt"><button class="btn ghost" onclick="showLock()">Back</button><span class="sp"></span><button class="btn pri" onclick="forgotPinCheck()">Remove PIN</button></div>`
     : `<h2 class="acc" style="font-size:13px;letter-spacing:.08em">FORGOT PIN</h2><div class="small muted" style="margin:8px 0 12px;line-height:1.7">Sync isn't on, so the only way in is to <b>erase Oracle 2's data on this device</b> and start fresh (or restore a backup file afterwards).</div>
@@ -312,7 +326,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') hiddenAt = Date.now();
   else if (PREFS.lock && !LOCKED && hiddenAt && Date.now() - hiddenAt >= (+PREFS.lock.after || 0) * 60e3) lockNow();
 });
-document.addEventListener('keydown', e => { if (!LOCKED) return; if (/^\d$/.test(e.key)) pinKey(e.key); else if (e.key === 'Backspace') pinKey('del'); }, true);
+document.addEventListener('keydown', e => { if (!LOCKED || e.target.tagName === 'INPUT') return; if (/^\d$/.test(e.key)) { e.preventDefault(); pinKey(e.key); } else if (e.key === 'Backspace') { e.preventDefault(); pinKey('del'); } }, true);
 
 // ------------------------------------------------------------------ money engine
 const catBucket = name => (D.settings.categories.find(c => c.name === name) || {}).bucket || 'wants';
@@ -341,15 +355,15 @@ function periodStats(p) {
   const spent = {needs: sum(tx.filter(t => t.bucket === 'needs'), t => t.amount), wants: sum(tx.filter(t => t.bucket === 'wants'), t => t.amount), savings: sum(tx.filter(t => t.bucket === 'savings'), t => t.amount)};
   const unpaid = billOccurrences(maxd(p.start, TODAY), p.end).filter(o => !o.paid);
   const committed = sum(unpaid, o => o.r.amount);
-  const needsLeft = p.budget.needs - spent.needs, wantsLeft = p.budget.wants - spent.wants;
-  return {tx, spent, unpaid, committed, needsLeft, wantsLeft, leftover: needsLeft - committed + wantsLeft};
+  const giftsAside = giftReserve(p.start, p.end), needsLeft = p.budget.needs - spent.needs, wantsLeft = p.budget.wants - spent.wants - giftsAside;
+  return {tx, spent, unpaid, committed, giftsAside, needsLeft, wantsLeft, leftover: needsLeft - committed + wantsLeft};
 }
 function safeToSpend(p) {
   if (!p || p.over) return null;
   const wants = p.budget.wants, ws = monday(TODAY);
   const weekStart = maxd(ws, p.start), weekEnd = mind(addDays(ws, 6), p.end);
   const spentBefore = sum(salaryTx(p.start, addDays(weekStart, -1), 'wants'), t => t.amount);
-  const remAtWeek = wants - spentBefore;
+  const remAtWeek = wants - giftReserve(p.start, p.end) - spentBefore;
   const weekAllow = remAtWeek * (diff(weekStart, weekEnd) + 1) / (diff(weekStart, p.end) + 1);
   const spentPrev = sum(salaryTx(weekStart, addDays(TODAY, -1), 'wants'), t => t.amount);
   const spentToday = sum(salaryTx(TODAY, TODAY, 'wants'), t => t.amount);
@@ -578,10 +592,58 @@ function eventsOn(date) {
   const hol = holidayOn(date); if (hol) ev.unshift({k: 'holiday', g: '⚑', c: 'var(--bad)', t: hol, s: 'Public holiday in Bulgaria'});
   if (bgOn()) for (const p of D.people) { const n = nameDayOf(p, +date.slice(0, 4)); if (n && n.date === date) ev.push({k: 'nameday', g: '✧', c: 'var(--extra)', t: `${p.name}'s name day`, s: n.feast}); }
   if (date >= TODAY && !trainedOn(date) && planOn(date)) ev.push({k: 'plan', g: '◇', c: 'var(--muted)', t: `Plan: ${planOn(date)}`, s: 'planned workout'});
+  for (const g of D.gifts) if (g.date === date) ev.push({k: 'gift', g: '❖', c: PAL.wants, t: `Gift: ${giftTitle(g)}`, s: g.status === 'bought' ? `bought · ${eur0(+g.paid || 0)}` : (g.budget ? eur0(+g.budget) + ' planned' : 'planned')});
   for (const m of D.media) if (m.status === 'done' && m.finished === date) ev.push({k: 'media', g: mKind(m.kind)[2], c: 'var(--accent)', t: `Finished: ${m.title}`, s: m.rating ? '★'.repeat(m.rating) : mKind(m.kind)[1]});
   for (const f of D.focus) if (f.date === date) { const x = ev.find(e => e.k === 'focus'); if (x) { x.min += f.min; x.s = hm(x.min); } else ev.push({k: 'focus', g: '◷', c: 'var(--muted)', t: 'Focus', s: hm(f.min), min: f.min}); }
   for (const b of D.body) if (b.date === date) ev.push({k: 'body', g: '○', c: 'var(--muted)', t: 'Body log', s: [b.weight && b.weight + ' kg', b.waist && b.waist + ' cm waist'].filter(Boolean).join(' · ')});
   return ev;
+}
+
+function ensureGiftsCategory() { if (!D.settings.categories.some(c => c.name === 'Gifts')) D.settings.categories.push({name: 'Gifts', bucket: 'wants'}); }
+// ------------------------------------------------------------------ gifts: plan what you'll spend on people, set it aside from Wants
+const OCCASIONS = [['birthday', 'Birthday'], ['nameday', 'Name day'], ['christmas', 'Christmas'], ['wedding', 'Wedding'], ['anniversary', 'Anniversary'], ['other', 'Other event']];
+const occName = o => (OCCASIONS.find(x => x[0] === o) || OCCASIONS[5])[1];
+const giftWho = g => g.personId ? ((D.people.find(p => p.id === g.personId) || {}).name || g.who || '?') : (g.who || '');
+const giftTitle = g => `${giftWho(g) || g.title || 'Gift'}${g.occasion ? ' · ' + (g.occasion === 'other' ? (g.title || 'event') : occName(g.occasion).toLowerCase()) : ''}`;
+const giftsPlanned = () => D.gifts.filter(g => g.status !== 'bought');
+// planned (not yet bought) gift budgets dated inside [from, to] — these are set aside from Wants
+const giftReserve = (from, to) => sum(giftsPlanned().filter(g => g.date >= from && g.date <= to), g => +g.budget || 0);
+function occasionDate(o, p) {
+  if (o === 'birthday' && p) return nextBirthday(p.birthday);
+  if (o === 'nameday' && p) return (nextNameDay(p) || {}).date || null;
+  if (o === 'christmas') { const c = TODAY.slice(0, 4) + '-12-25'; return c >= TODAY ? c : (+TODAY.slice(0, 4) + 1) + '-12-25'; }
+  return null;
+}
+const hasGiftFor = (pid, occ, date) => D.gifts.some(g => g.personId === pid && g.occasion === occ && g.date === date);
+// occasions in the next `days` days that have no gift planned yet
+function giftGaps(days = 45) {
+  const out = [], lim = addDays(TODAY, days);
+  for (const p of D.people) {
+    const nb = nextBirthday(p.birthday); if (nb && nb <= lim && !hasGiftFor(p.id, 'birthday', nb)) out.push({p, occ: 'birthday', date: nb});
+    const nd = nextNameDay(p); if (nd && nd.date <= lim && !hasGiftFor(p.id, 'nameday', nd.date)) out.push({p, occ: 'nameday', date: nd.date});
+  }
+  return out.sort((a, b) => a.date < b.date ? -1 : 1);
+}
+function giftsBody(q) {
+  const yr = TODAY.slice(0, 4), per = currentPeriod(), match = g => !q || (giftTitle(g) + ' ' + (g.idea || '')).toLowerCase().includes(q);
+  const plan = giftsPlanned().filter(match).sort((a, b) => a.date < b.date ? -1 : 1), given = D.gifts.filter(g => g.status === 'bought' && match(g)).sort((a, b) => (a.boughtAt || a.date) < (b.boughtAt || b.date) ? 1 : -1);
+  const spentYr = sum(D.transactions.filter(t => t.category === 'Gifts' && t.date.startsWith(yr)), t => t.amount), gaps = giftGaps(45);
+  const byP = {}; for (const t of D.transactions.filter(t => t.category === 'Gifts' && t.date.startsWith(yr))) { const g = D.gifts.find(x => x.txId === t.id), k = g ? giftWho(g) || 'Other' : 'Other'; byP[k] = (byP[k] || 0) + t.amount; }
+  for (const g of giftsPlanned().filter(g => g.date.startsWith(yr))) { const k = giftWho(g) || 'Other'; byP[k] = (byP[k] || 0) + (+g.budget || 0); }
+  const dd = d => { const n = diff(TODAY, d); return n < 0 ? `<span class="bad">${-n}d ago</span>` : n === 0 ? '<span class="acc">today</span>' : `in ${n}d`; };
+  const prow = g => `<div class="li wrow"><span class="small muted" style="width:62px">${fd(g.date)}</span><span class="t" style="white-space:normal;cursor:pointer" onclick="A.gift('${g.id}')">${esc(giftTitle(g))}${g.idea ? `<div class="small faint">${esc(g.idea)}</div>` : ''}</span><span class="small muted hide-m">${dd(g.date)}</span><span>${eur(+g.budget || 0)}</span><button class="btn sm" onclick="A.giftBuy('${g.id}')">Bought</button></div>`;
+  return `<div class="grid g4" style="margin-bottom:16px">
+      <div class="card stat hero"><div class="lbl">Set aside now</div><div class="val">${eur0(per ? giftReserve(per.start, per.end) : 0)}</div><div class="sub">gifts due this pay period — taken out of Wants</div></div>
+      <div class="card stat"><div class="lbl">Next 30 days</div><div class="val">${eur0(giftReserve(TODAY, addDays(TODAY, 30)))}</div><div class="sub">${(n => `${n} gift${n === 1 ? '' : 's'} planned`)(giftsPlanned().filter(g => g.date >= TODAY && g.date <= addDays(TODAY, 30)).length)}</div></div>
+      <div class="card stat"><div class="lbl">Gifts ${yr}</div><div class="val">${eur0(spentYr)}</div><div class="sub">spent · ${eur0(giftReserve(TODAY, yr + '-12-31'))} still planned</div></div>
+      <div class="card stat"><div class="lbl">No gift planned</div><div class="val ${gaps.length ? 'warn' : ''}">${gaps.length}</div><div class="sub">occasions in the next 45 days</div></div></div>
+    <div class="grid g21"><div class="grid" style="align-content:start">
+      ${gaps.length ? `<div class="card briefing"><h3>Coming up — no gift yet</h3><div class="list">${gaps.map(x => `<div class="li wrow"><span class="small muted" style="width:62px">${fd(x.date)}</span><span class="t">${esc(x.p.name)} <span class="muted small">· ${occName(x.occ).toLowerCase()}</span>${x.p.gifts ? `<div class="small faint">ideas: ${esc(x.p.gifts)}</div>` : ''}</span><span class="small muted hide-m">${dd(x.date)}</span><button class="btn sm pri" onclick="A.gift(null,{personId:'${x.p.id}',occasion:'${x.occ}',date:'${x.date}'})">Plan gift</button></div>`).join('')}</div></div>` : ''}
+      <div class="card"><h3>Planned · ${plan.length} <span class="act muted">${eur0(sum(plan, g => +g.budget || 0))}</span></h3><div class="list">${plan.map(prow).join('') || '<div class="empty">Plan a gift for a birthday, name day, Christmas or any event — its budget is set aside from Wants in that pay period.</div>'}</div></div>
+      <div class="card"><h3>Given · ${given.length}</h3><div class="list">${given.slice(0, 20).map(g => `<div class="li wrow"><span class="small muted" style="width:62px">${fd(g.boughtAt || g.date)}</span><span class="t" style="cursor:pointer" onclick="A.gift('${g.id}')">${esc(giftTitle(g))}${g.idea ? ` <span class="small faint">· ${esc(g.idea)}</span>` : ''}</span><span>${eur(+g.paid || 0)}</span><span class="small ${(+g.paid || 0) > (+g.budget || 0) && g.budget ? 'warn' : 'faint'} hide-m" style="width:78px;text-align:right">${g.budget ? 'budget ' + eur0(+g.budget) : ''}</span></div>`).join('') || '<div class="empty small">—</div>'}</div></div></div>
+      <div class="grid" style="align-content:start"><div class="card"><h3>By person · ${yr}</h3>${Object.keys(byP).length ? hbars(Object.entries(byP).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([l, v]) => ({label: l, value: v, color: PAL.wants, right: eur0(v)}))) : '<div class="empty small">Spent and planned gifts per person show here</div>'}
+        <div class="small faint mt">Includes gifts still planned this year.</div></div>
+      <div class="card"><h3>How it works</h3><div class="small muted" style="line-height:1.8">Plan a gift with a budget → that amount is <b>set aside from Wants</b> in the pay period of the gift's date, so "safe to spend" already accounts for it.<br>Press <b>Bought</b> → it becomes a <b>Gifts</b> expense and the set-aside amount is released.<br>Gift ideas from each person's card are filled in for you.</div></div></div></div>`;
 }
 
 const V = {};
@@ -785,6 +847,7 @@ V.today = () => {
   for (const o of billOccurrences(TODAY, addDays(TODAY, Math.max(lead, 14)))) if (!o.paid) up.push({d: o.date, g: '▲', c: 'var(--warn)', t: `${o.r.name}${o.r.freq === 'year' ? ' (yearly)' : ''}`, s: eur(o.r.amount), bill: o});
   if (bgOn()) { for (let i = 0; i <= 14; i++) { const d = addDays(TODAY, i), h = holidayOn(d); if (h) up.push({d, g: '⚑', c: 'var(--bad)', t: h, s: 'day off'}); }
     for (const pp of D.people) { const n = nextNameDay(pp); if (n && diff(TODAY, n.date) <= 14) up.push({d: n.date, g: '✧', c: 'var(--extra)', t: `${pp.name}'s name day`, s: n.feast}); } }
+  for (const g of giftsPlanned()) if (diff(TODAY, g.date) <= Math.max(lead, 14)) up.push({d: g.date < TODAY ? TODAY : g.date, g: '❖', c: PAL.wants, t: `Gift: ${giftTitle(g)}`, s: g.budget ? eur0(+g.budget) + ' set aside' : 'no budget', gift: g});
   for (const {p: pp, due} of touchList()) if (diff(TODAY, due) <= 3) up.push({d: due < TODAY ? TODAY : due, g: '☏', c: 'var(--accent)', t: `Catch up with ${pp.name}`, s: pp.lastContact ? `last talked ${fd(pp.lastContact)}` : `every ${pp.keepEvery} wk`, touch: pp});
   for (const t of D.tasks) if (!t.done && t.due && t.due <= addDays(TODAY, Math.max(14, +t.remindBefore || 0))) up.push({d: t.due, g: '□', c: t.due < TODAY ? 'var(--bad)' : 'var(--text)', t: t.title, s: t.due < TODAY ? 'overdue' : '', task: t});
   up.sort((a, b) => a.d < b.d ? -1 : 1);
@@ -797,7 +860,7 @@ V.today = () => {
   const upcoming = `<div class="card"><h3>Upcoming · next 14 days <span class="act faint">reminders ${lead}d ahead</span></h3><div class="list">${up.length ? up.map(u => {
     const dd = diff(TODAY, u.d), when = dd < 0 ? `${-dd}d ago` : dd === 0 ? 'today' : dd === 1 ? 'tomorrow' : `in ${dd}d`;
     return `<div class="li"><span style="color:${u.c};width:14px">${u.g}</span><span class="t">${esc(u.t)} <span class="muted small">${esc(u.s)}</span></span>
-      ${u.bill ? `<button class="btn sm" onclick="A.payBill('${u.bill.r.id}','${u.bill.ym}')">Mark paid</button>` : ''}${u.task ? `<button class="btn sm" onclick="A.toggleTask('${u.task.id}')">Done</button>` : ''}${u.touch ? `<button class="btn sm" onclick="A.talked('${u.touch.id}')">Talked</button>` : ''}
+      ${u.bill ? `<button class="btn sm" onclick="A.payBill('${u.bill.r.id}','${u.bill.ym}')">Mark paid</button>` : ''}${u.task ? `<button class="btn sm" onclick="A.toggleTask('${u.task.id}')">Done</button>` : ''}${u.touch ? `<button class="btn sm" onclick="A.talked('${u.touch.id}')">Talked</button>` : ''}${u.gift ? `<button class="btn sm" onclick="A.giftBuy('${u.gift.id}')">Bought</button>` : ''}
       <span class="small ${dd <= lead && dd >= 0 ? 'acc' : 'muted'}" style="width:74px;text-align:right">${when}</span></div>`; }).join('') : '<div class="empty">Nothing coming up</div>'}</div></div>`;
   // side: bucket bars + body
   const buckets = p ? `<div class="card"><h3>This pay period <span class="act faint small">${fd(p.start)} – ${fd(p.end)}</span></h3>${hbars(['needs', 'wants', 'savings'].map(k => ({label: k[0].toUpperCase() + k.slice(1), value: k === 'savings' ? p.budget.savings : st.spent[k], max: p.budget[k], color: PAL[k],
@@ -831,7 +894,7 @@ V.money_overview = () => {
   const left = `<div class="card"><h3>Left in this period <span class="act faint small">${fd(p.start)} – ${fd(p.end)}${p.estimated ? ' (est.)' : ''}</span></h3>
     ${hbars([{label: 'Needs', value: st.spent.needs, max: p.budget.needs, color: PAL.needs, right: `${eur(st.spent.needs)} spent · ${eur(st.needsLeft)} left`},
       {label: 'Needs — bills still due', value: st.committed, max: p.budget.needs, color: 'var(--warn)', right: eur(st.committed)},
-      {label: 'Wants', value: st.spent.wants, max: p.budget.wants, color: PAL.wants, right: `${eur(st.spent.wants)} spent · ${eur(st.wantsLeft)} left`}])}
+      {label: 'Wants', value: st.spent.wants, max: p.budget.wants, color: PAL.wants, right: `${eur(st.spent.wants)} spent · ${eur(st.wantsLeft)} left${st.giftsAside ? ` · ${eur0(st.giftsAside)} for gifts` : ''}`}])}
     <div class="row mt" style="padding-top:12px;border-top:1px solid var(--line)"><div><div class="small muted">Expected leftover · you review it when the period ends</div><div class="big ${st.leftover < 0 ? 'bad' : 'acc'}">${eur(st.leftover)}</div></div><span class="sp"></span>
       ${p.pc.closed ? `<span class="small muted">✓ reviewed · ${eur(p.pc.leftoverMoved || 0)} to savings</span>` : `<button class="btn ${diff(TODAY, p.end) <= 2 ? 'pri' : 'ghost'}" onclick="A.review('${p.pc.id}')">Review leftover${diff(TODAY, p.end) > 2 ? ' early' : ''}</button>`}</div></div>`;
   const cats = {}; for (const t of st.tx) cats[t.category] = (cats[t.category] || 0) + t.amount;
@@ -1017,7 +1080,7 @@ V.gym_import = () => {
 
 // ---------------- records
 V.records = () => {
-  const tabs = [['people', 'People'], ['tasks', 'Tasks & notes'], ['media', 'Media log']];
+  const tabs = [['people', 'People'], ['gifts', 'Gifts'], ['tasks', 'Tasks & notes'], ['media', 'Media log']];
   const q = UI.search.toLowerCase();
   let body;
   if (UI.recTab === 'people') {
@@ -1028,8 +1091,14 @@ V.records = () => {
       ${nb ? `<div class="row mt"><span style="color:var(--extra)">✦</span><span>${fd(nb)}${by ? ` · turns ${+nb.slice(0, 4) - by}` : ''}</span><span class="sp"></span><span class="small ${dd <= Math.max(7, D.settings.reminderDays) ? 'acc' : 'muted'}">${dd === 0 ? 'today!' : `in ${dd}d`}</span></div>` : '<div class="faint small mt">no birthday set</div>'}
       ${(() => { const n = nextNameDay(p); return n ? `<div class="row small" style="margin-top:4px"><span style="color:var(--extra)">✧</span><span>Name day ${fd(n.date)} <span class="faint">${esc(n.feast)}</span></span><span class="sp"></span><span class="muted">${diff(TODAY, n.date) === 0 ? 'today!' : `in ${diff(TODAY, n.date)}d`}</span></div>` : ''; })()}
       ${+p.keepEvery > 0 ? (() => { const due = touchDue(p), dd = diff(TODAY, due); return `<div class="row small" style="margin-top:6px"><span class="acc">☏</span><span class="${dd <= 0 ? 'warn' : 'muted'}">${dd < 0 ? `catch-up ${-dd}d overdue` : dd === 0 ? 'catch up today' : `catch up in ${dd}d`}${p.lastContact ? ` · last ${fd(p.lastContact)}` : ''}</span><span class="sp"></span><button class="btn sm" onclick="A.talked('${p.id}')">Talked today</button></div>`; })() : ''}
+      ${(() => { const g = giftsPlanned().filter(g => g.personId === p.id).sort((a, b) => a.date < b.date ? -1 : 1)[0], gap = giftGaps(45).find(x => x.p.id === p.id);
+        const bg = !g && D.gifts.filter(x => x.personId === p.id && x.status === 'bought' && x.date >= addDays(TODAY, -3)).sort((a, b) => a.date < b.date ? -1 : 1)[0];
+        if (bg && !gap) return `<div class="row small" style="margin-top:6px;cursor:pointer" onclick="A.gift('${bg.id}')"><span class="good">✓</span><span>Gift bought · ${eur0(+bg.paid || 0)} for the ${occName(bg.occasion).toLowerCase()} ${fd(bg.date)}</span><span class="sp"></span><button class="btn sm ghost" onclick="event.stopPropagation();A.gift(null,{personId:'${p.id}'})">Plan gift</button></div>`;
+        return g ? `<div class="row small" style="margin-top:6px;cursor:pointer" onclick="A.gift('${g.id}')"><span style="color:${PAL.wants}">❖</span><span>Gift ${eur0(+g.budget || 0)} · ${occName(g.occasion).toLowerCase()} ${fd(g.date)}${g.idea ? ` <span class="faint">— ${esc(g.idea)}</span>` : ''}</span><span class="sp"></span><button class="btn sm" onclick="event.stopPropagation();A.giftBuy('${g.id}')">Bought</button></div>`
+          : `<div class="row small" style="margin-top:6px"><span style="color:${PAL.wants}">❖</span><span class="${gap ? 'warn' : 'faint'}">${gap ? `no gift for the ${occName(gap.occ).toLowerCase()} yet` : 'no gift planned'}</span><span class="sp"></span><button class="btn sm ${gap ? 'pri' : 'ghost'}" onclick="A.gift(null,{personId:'${p.id}'${gap ? `,occasion:'${gap.occ}',date:'${gap.date}'` : ''}})">Plan gift</button></div>`; })()}
       ${p.gifts ? `<div class="small mt"><span class="muted">Gift ideas:</span> ${esc(p.gifts)}</div>` : ''}${p.notes ? `<div class="small muted mt">${esc(p.notes)}</div>` : ''}</div>`; }).join('') || '<div class="card"><div class="empty">No one added yet</div></div>'}</div>`;
   } else if (UI.recTab === 'media') body = mediaBody(q);
+  else if (UI.recTab === 'gifts') body = giftsBody(q);
   else {
     const ts = D.tasks.filter(t => !q || JSON.stringify(t).toLowerCase().includes(q));
     const open = ts.filter(t => !t.done).sort((a, b) => (a.due || '9') < (b.due || '9') ? -1 : 1), done = ts.filter(t => t.done).sort((a, b) => (a.doneAt || '') < (b.doneAt || '') ? 1 : -1);
@@ -1042,7 +1111,7 @@ V.records = () => {
   }
   return `<div class="row"><div class="tabs" style="flex:1">${tabs.map(([k, l]) => `<a class="${UI.recTab === k ? 'on' : ''}" onclick="UI.recTab='${k}';render()">${l}</a>`).join('')}</div>
     <div class="row" style="margin-bottom:18px"><input placeholder="Search…" value="${esc(UI.search)}" oninput="UI.search=this.value;clearTimeout(window._st);window._st=setTimeout(()=>{render();const i=document.querySelector('#view input');i.focus();i.setSelectionRange(99,99)},250)">
-    <button class="btn pri" onclick="${{people: 'A.person()', tasks: 'A.task()', media: 'A.media()'}[UI.recTab]}">+ ${{people: 'Person', tasks: 'Task / note', media: 'Add'}[UI.recTab]}</button></div></div>${body}`;
+    <button class="btn pri" onclick="${{people: 'A.person()', tasks: 'A.task()', media: 'A.media()', gifts: 'A.gift()'}[UI.recTab]}">+ ${{people: 'Person', tasks: 'Task / note', media: 'Add', gifts: 'Gift'}[UI.recTab]}</button></div></div>${body}`;
 };
 
 // ---------------- life goals
@@ -1273,7 +1342,7 @@ V.calendar = () => {
           <div class="row"><span class="n">${pd(d).getDate()}</span><span class="sp"></span>${ev.some(e => e.k === 'gym') ? '<span style="color:var(--accent)">◆</span>' : ''}</div>
           ${items.filter(e => !['gym', 'focus'].includes(e.k)).slice(0, 3).map(e => `<div class="mk"><span style="color:${e.c}">${e.g}</span><span>${esc(e.t)}</span></div>`).join('')}
           ${spend ? `<div class="mk muted"><span>−${eur(spend).replace('−', '')}</span></div>` : ''}${inc.length ? `<div class="mk good"><span>+${eur(sum(D.paychecks.filter(p => p.date === d), p => p.amount), 0)}</span></div>` : ''}</div>`; }).join('')}</div>
-      <div class="mt"><div class="legend">${[ ['var(--accent)', '◆', 'workout'], ['var(--muted)', '◇', 'planned'], ['var(--bad)', '⚑', 'holiday'], ['var(--extra)', '✧', 'name day'], ['var(--warn)', '▲', 'bill due'], ['var(--muted)', '✓', 'bill paid'], ['var(--extra)', '✦', 'birthday'], ['var(--text)', '□', 'task'], ['var(--wants)', '◎', 'goal deadline'], ['var(--good)', '★', 'goal achieved'], ['var(--good)', '+€', 'income'], ['var(--muted)', '−€', 'spent'], ['var(--savings)', '↗', 'to savings']].map(([c, g, l]) => `<span><b style="color:${c};font-weight:400">${g}</b>${l}</span>`).join('')}</div></div></div>
+      <div class="mt"><div class="legend">${[ ['var(--accent)', '◆', 'workout'], ['var(--muted)', '◇', 'planned'], ['var(--bad)', '⚑', 'holiday'], ['var(--extra)', '✧', 'name day'], [PAL.wants, '❖', 'gift'], ['var(--warn)', '▲', 'bill due'], ['var(--muted)', '✓', 'bill paid'], ['var(--extra)', '✦', 'birthday'], ['var(--text)', '□', 'task'], ['var(--wants)', '◎', 'goal deadline'], ['var(--good)', '★', 'goal achieved'], ['var(--good)', '+€', 'income'], ['var(--muted)', '−€', 'spent'], ['var(--savings)', '↗', 'to savings']].map(([c, g, l]) => `<span><b style="color:${c};font-weight:400">${g}</b>${l}</span>`).join('')}</div></div></div>
     <div class="card" style="position:sticky;top:0"><h3>${fdl(UI.calSel)} ${UI.calSel.slice(0, 4)}</h3>
       ${feastsOn(UI.calSel).length ? `<div class="small muted" style="margin:-4px 0 8px;line-height:1.6"><span style="color:var(--extra)">✧</span> ${feastsOn(UI.calSel).map(f => `<b style="font-weight:500;color:var(--text)">${esc(f.feast)}</b> — ${esc(f.names.join(', '))}`).join('<br>')}</div>` : ''}
       ${sel.length ? sel.map(e => `<div class="li" style="align-items:flex-start"><span style="color:${e.c};width:14px">${e.g}</span><div style="flex:1;min-width:0"><div>${esc(e.t)}</div>${e.s ? `<div class="small muted">${esc(e.s)}</div>` : ''}</div></div>`).join('') : '<div class="empty">Nothing on this day</div>'}
@@ -1343,7 +1412,7 @@ const HELP = [
     <tr><td><b>Money</b></td><td>Overview · Transactions · Bills & subscriptions (incl. yearly check-up) · Wishlist · Savings & goals · <b>Net worth</b></td></tr>
     <tr><td><b>Gym</b></td><td>Overview · <b>Plan</b> (weekly training schedule) · Exercises · Body · History · Import</td></tr>
     <tr><td><b>Goals</b></td><td>Goals · <b>Focus timer</b></td></tr>
-    <tr><td><b>Records</b></td><td>People (birthdays, name days, keep in touch) · Tasks & notes · <b>Media log</b></td></tr>
+    <tr><td><b>Records</b></td><td>People (birthdays, name days, keep in touch) · <b>Gifts</b> · Tasks & notes · Media log</td></tr>
     <tr><td><b>Calendar</b></td><td>everything by day, incl. Bulgarian holidays and name days</td></tr>
     <tr><td><b>Settings</b></td><td>Appearance · Privacy & lock · Money · Reminders · Sync · Data · About — tap a chip at the top to jump</td></tr></table>`],
   ['Quick add', `<p>Press <kbd>Ctrl K</kbd> on a computer or the round <b>+</b> button on a phone, type one line, press Enter. The preview shows how it will be saved.</p>
@@ -1366,6 +1435,13 @@ const HELP = [
   ['Calendar, records & reminders', `<p>The <b>Calendar</b> shows everything per day: ◆ workouts, − spending, + income, ▲ bills due, ✓ bills paid, ✦ birthdays, ✧ name days, ⚑ holidays, ◇ planned workouts, □ tasks, ◎ goal deadlines, ★ goals achieved, finished books/games/films. Tap a day for the details.</p>
     <p><b>Records</b> holds people (birthday, name day, keep in touch, gift ideas), tasks & notes, and the media log.</p>
     <p><b>Reminders</b>: birthdays and bills at least 7 days ahead (change in Settings), the day before and on the day; a weekly summary every Monday. Turn on notifications in Settings. On Android and desktop they also arrive while the app is closed (checked a few times a day); on iPhone they show when you open the app.</p>`],
+  ['Gifts', `<p><b>Gifts</b> is a Wants category (next to Eating out and Hobbies), and <b>Records → Gifts</b> lets you plan them ahead.</p>
+    <ul><li><b>Plan a gift</b>: pick the person and the occasion — birthday, name day, Christmas, wedding, anniversary or any event. The date fills itself in from their birthday / name day, and their gift ideas are copied in. Add a budget.</li>
+    <li>The budget is <b>set aside from Wants</b> in the pay period of that date, so <i>safe to spend</i> and <i>Wants left</i> already count it (Money → Overview shows “€40 for gifts”).</li>
+    <li><b>Bought</b> (in Records → Gifts, on the person's card or in Today's Upcoming): enter what you paid — it becomes a Gifts expense and the set-aside money is released. Paying more or less than planned is shown.</li>
+    <li><b>Coming up — no gift yet</b> lists birthdays and name days in the next 45 days without a plan. Each person's card in People shows their next gift or a <b>Plan gift</b> button.</li>
+    <li>Gifts show on the calendar ❖ and you're reminded before the date. <i>By person</i> shows what you've spent and planned for everyone this year.</li>
+    <li>Quick add works too: <code>35 gifts mum</code>.</li></ul>`],
   ['Training plan', `<p><b>Gym → Plan</b>: type a workout name for each training day (e.g. Monday <i>Push</i>, Wednesday <i>Pull</i>, Friday <i>Legs</i>) and leave rest days empty — or tap a template and adjust it. The plan syncs to all your devices.</p>
     <ul><li><b>Today</b> shows <i>Today: Push</i> or <i>Rest day</i>; the calendar shows ◇ planned days ahead.</li><li>A planned day counts as done when a workout from that day is imported from Hevy.</li>
     <li><b>Sticking to the plan</b> shows ✓ done, ✗ missed and ◆ extra workouts for the last 4 weeks, and your % over 7 weeks.</li>
@@ -1480,6 +1556,7 @@ async function tourEnd() {
 
 // ---------------- what's new (shown once on each device after an update)
 const CHANGELOG = [
+  {v: '2.6.0', items: ['Gifts: a new Wants category, plus Records → Gifts to plan gifts for birthdays, name days, Christmas and other events', 'A planned gift\'s budget is set aside from Wants in its pay period — safe to spend already counts it', '“Bought” turns a plan into a Gifts expense; see what you spend per person', 'Reminders and calendar entries for planned gifts; Today shows gifts coming up', 'Redesigned lock screen: bigger keys spread across the screen, faster response, live wait countdown']},
   {v: '2.5.0', items: ['Hide amounts — the eye button at the top', 'Optional app lock with a PIN per device; fingerprint / face on phones', 'Your own colours: accent, background and text size (Settings → Appearance)', 'Bulgarian holidays & name days in the calendar, Today and reminders — paydays skip holidays', 'Keep in touch: get nudged to call people you haven\'t talked to in a while', 'Focus timer (Goals → Focus timer)', 'Media log for books, games, films & series (Records → Media log)', 'Net worth & investments (Money → Net worth)', 'Subscription check-up: yearly bills, price-change history, a yearly "still using it?"', 'Training plan with fixed weekdays (Gym → Plan)', 'App-icon shortcuts: long-press / right-click the icon', 'Settings sorted into sections; Help covers everything new']},
   {v: '2.4.1', items: ['Wishlist fits phone screens: one compact row per item — coloured dot for need/want, price on the right, "fits this week" underneath, tap a name to edit']},
   {v: '2.4.0', items: ['Transactions fit your phone screen: amount up front, a coloured dot for needs/wants/savings, ↗ for paid from savings, tap a row to edit', 'All numbers are properly rounded — no more 177.45000000000002', 'Quick add: an editable preview (category, budget, paid from, day) so things are sorted right the first time, an Add button, and it remembers how you sorted a note before', 'iPhone: the ✓ above the keyboard now saves in Quick add', 'Wants limits per category with warnings at 80% and when you go over', 'Savings cover: how many months your savings last, plus your normal needs / wants / saved per pay period', 'A new guided tour (shown once on each device)', 'This "What\'s new" window after every update']},
@@ -1735,6 +1812,50 @@ const A = {
       PREFS.lock.cred = b64(c.rawId); await savePrefs(); toast('Fingerprint / face unlock on'); render();
     } catch { toast('Couldn\'t set up fingerprint / face on this device'); }
   },
+  // ---- gifts
+  gift(id, preset) {
+    const g = id ? D.gifts.find(x => x.id === id) : {occasion: 'birthday', budget: '', ...(preset || {})}, p = D.people.find(x => x.id === g.personId);
+    if (!id && p && !g.idea) g.idea = p.gifts || '';
+    modal(`<h2>${id ? 'Edit gift' : 'Plan a gift'}</h2><div class="formgrid">
+      <label class="f">For<select id="gf_p" onchange="A.giftAuto()"><option value="">— someone not in People —</option>${D.people.slice().sort((a, b) => a.name.localeCompare(b.name)).map(x => `<option value="${x.id}" ${g.personId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+      <label class="f" id="gf_whow" style="${g.personId ? 'display:none' : ''}">Name<input id="gf_who" value="${esc(g.who || '')}" placeholder="colleague, cousin's kid…"></label>
+      <label class="f">Occasion<select id="gf_o" onchange="A.giftAuto()">${OCCASIONS.map(([k, l]) => `<option value="${k}" ${g.occasion === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <label class="f" id="gf_tw" style="${g.occasion === 'other' || g.occasion === 'wedding' || g.occasion === 'anniversary' ? '' : 'display:none'}">Event name<input id="gf_t" value="${esc(g.title || '')}" placeholder="housewarming, graduation…"></label>
+      <label class="f">Date<input type="date" id="gf_d" value="${g.date || occasionDate(g.occasion, p) || ''}"></label>
+      <label class="f">Budget (€)<input type="number" inputmode="decimal" step="0.01" id="gf_b" value="${g.budget || ''}" placeholder="0.00"></label>
+      <label class="f full">Gift idea<input id="gf_i" value="${esc(g.idea || '')}" placeholder="what you'll get"></label></div>
+      <div class="small faint mt">The budget is set aside from Wants in the pay period of this date until you mark it bought.</div>
+      ${g.status === 'bought' ? `<div class="small mt">Bought ${fd(g.boughtAt)} for <b>${eur(+g.paid || 0)}</b> · <a class="acc" style="cursor:pointer" onclick="A.giftUnbuy('${id}')">undo</a></div>` : ''}
+      <div class="row mt">${id ? `<button class="btn ghost danger" onclick="A.giftDel('${id}')">Delete</button>` : ''}<span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.giftSave('${id || ''}')">Save</button></div>`);
+  },
+  giftAuto() {
+    const p = D.people.find(x => x.id === val('gf_p')), o = val('gf_o');
+    $('#gf_whow').style.display = p ? 'none' : ''; $('#gf_tw').style.display = ['other', 'wedding', 'anniversary'].includes(o) ? '' : 'none';
+    const d = occasionDate(o, p); if (d) $('#gf_d').value = d;
+    if (p && !val('gf_i') && p.gifts) $('#gf_i').value = p.gifts;
+  },
+  giftSave(id) {
+    const g = {personId: val('gf_p'), who: val('gf_p') ? '' : val('gf_who'), occasion: val('gf_o'), title: val('gf_t'), date: val('gf_d'), budget: r2(num(val('gf_b'))), idea: val('gf_i')};
+    if (!g.personId && !g.who) return toast('Who is it for?'); if (!g.date) return toast('Pick the date');
+    if (id) Object.assign(D.gifts.find(x => x.id === id), g); else D.gifts.push({id: uid(), status: 'planned', ...g});
+    closeModal(); commit(); toast(g.budget ? `${eur(g.budget)} set aside for ${giftWho(g)}` : 'Gift planned');
+  },
+  giftDel(id) { const g = D.gifts.find(x => x.id === id); if (!confirm(g.txId ? 'Delete this gift? Its expense stays in your transactions.' : 'Delete this gift plan?')) return; A.del('gifts', id); closeModal(); },
+  giftBuy(id) {
+    const g = D.gifts.find(x => x.id === id);
+    modal(`<h2>Bought: ${esc(giftTitle(g))}</h2><div class="formgrid"><label class="f">Paid (€)<input type="number" inputmode="decimal" step="0.01" id="gb_amt" value="${g.budget || ''}"></label><label class="f">Date<input type="date" id="gb_d" value="${TODAY}"></label>
+      <label class="f full">What did you get<input id="gb_i" value="${esc(g.idea || '')}"></label>
+      <div class="full"><div class="small muted" style="margin-bottom:4px">PAID FROM</div><span class="seg" id="gb_src"><button class="on" onclick="this.parentNode.querySelectorAll('button').forEach(b=>b.classList.remove('on'));this.classList.add('on')">Salary (Wants)</button><button onclick="this.parentNode.querySelectorAll('button').forEach(b=>b.classList.remove('on'));this.classList.add('on')">Savings</button></span></div></div>
+      <div class="row mt"><span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.giftBuySave('${id}')">Save</button></div>`);
+  },
+  giftBuySave(id) {
+    const g = D.gifts.find(x => x.id === id), amt = r2(num(val('gb_amt'))); if (amt <= 0) return toast('Enter what you paid');
+    ensureGiftsCategory(); const src = $('#gb_src button.on').textContent.startsWith('Savings') ? 'savings' : 'salary', tid = uid(), cat = D.settings.categories.find(c => c.name === 'Gifts');
+    D.transactions.push({id: tid, date: val('gb_d'), amount: amt, category: 'Gifts', bucket: cat.bucket, note: `Gift: ${giftTitle(g)}${val('gb_i') ? ' — ' + val('gb_i') : ''}`, source: src, giftId: id});
+    Object.assign(g, {status: 'bought', paid: amt, boughtAt: val('gb_d'), txId: tid, idea: val('gb_i') || g.idea});
+    closeModal(); toast(`${eur(amt)} gift for ${giftWho(g)}${g.budget ? (amt > g.budget ? ` · ${eur(amt - g.budget)} over budget` : amt < g.budget ? ` · ${eur(g.budget - amt)} under budget` : '') : ''}`); if (src === 'salary') limitWarn('Gifts', amt); commit();
+  },
+  giftUnbuy(id) { const g = D.gifts.find(x => x.id === id); if (!confirm(`Undo? The ${eur(+g.paid || 0)} expense will be removed and the budget set aside again.`)) return; D.transactions = D.transactions.filter(t => t.id !== g.txId); Object.assign(g, {status: 'planned', paid: null, boughtAt: null, txId: null}); closeModal(); commit(); },
   // ---- training plan
   trDay(i, v) { const t = D.settings.training = {...(D.settings.training || {}), days: {...trDays()}}; v = v.trim(); if (v) t.days[i] = v; else delete t.days[i]; commit(); },
   trTemplate(i) { D.settings.training = {...(D.settings.training || {}), days: i < 0 ? {} : {...TR_TEMPLATES[i][1]}}; commit(); if (i >= 0) toast(TR_TEMPLATES[i][0] + ' set — edit any day'); },
@@ -1851,7 +1972,7 @@ const A = {
     const ex = D.body.find(b => b.date === d); if (ex) { if (w) ex.weight = w; if (ws) ex.waist = ws; } else D.body.push({id: uid(), date: d, weight: w, waist: ws});
     closeModal(); commit();
   },
-  del(coll, id) { if (coll === 'transactions') for (const w of D.wishlist) if (w.txId === id) Object.assign(w, {bought: false, txId: null, paid: null}); D[coll] = D[coll].filter(x => x.id !== id); if (coll === 'transactions') for (const r of D.recurring) for (const k in r.payments || {}) if (r.payments[k] === id) delete r.payments[k]; commit(); },
+  del(coll, id) { if (coll === 'transactions') { for (const w of D.wishlist) if (w.txId === id) Object.assign(w, {bought: false, txId: null, paid: null}); for (const g of D.gifts) if (g.txId === id) Object.assign(g, {status: 'planned', txId: null, paid: null, boughtAt: null}); } D[coll] = D[coll].filter(x => x.id !== id); if (coll === 'transactions') for (const r of D.recurring) for (const k in r.payments || {}) if (r.payments[k] === id) delete r.payments[k]; commit(); },
   async hevyPaste() {
     try { const t = await navigator.clipboard.readText(); if (!t.trim()) return toast('The clipboard is empty — copy the workout in Hevy first');
       $('#hevyText').value = t; importLive(t); if (innerWidth < 760) $('#impPv').scrollIntoView({behavior: 'smooth', block: 'center'}); }
@@ -2021,7 +2142,7 @@ function qaGo() {
 const CRUMB = {today: 'TODAY', money: 'MONEY', gym: 'GYM', goals: 'GOALS', records: 'RECORDS', calendar: 'CALENDAR', settings: 'SETTINGS', help: 'HELP', review: 'MONTH REVIEW'};
 function render() {
   document.querySelectorAll('[data-view]').forEach(a => a.classList.toggle('on', a.dataset.view === UI.view));
-  const sub = UI.view === 'money' ? ' // ' + ({tx: 'TRANSACTIONS', wish: 'WISHLIST', networth: 'NET WORTH'}[UI.moneyTab] || UI.moneyTab.toUpperCase()) : UI.view === 'gym' ? ' // ' + (UI.gymTab === 'progress' ? 'EXERCISES' : UI.gymTab.toUpperCase()) : UI.view === 'goals' && UI.goalsTab === 'focus' ? ' // FOCUS' : UI.view === 'records' ? ' // ' + {people: 'PEOPLE', tasks: 'TASKS', media: 'MEDIA'}[UI.recTab] : '';
+  const sub = UI.view === 'money' ? ' // ' + ({tx: 'TRANSACTIONS', wish: 'WISHLIST', networth: 'NET WORTH'}[UI.moneyTab] || UI.moneyTab.toUpperCase()) : UI.view === 'gym' ? ' // ' + (UI.gymTab === 'progress' ? 'EXERCISES' : UI.gymTab.toUpperCase()) : UI.view === 'goals' && UI.goalsTab === 'focus' ? ' // FOCUS' : UI.view === 'records' ? ' // ' + {people: 'PEOPLE', tasks: 'TASKS', media: 'MEDIA', gifts: 'GIFTS'}[UI.recTab] : '';
   $('#crumb').textContent = `> DECODING // ${CRUMB[UI.view]}${sub}`;
   const sc = $('#view').scrollTop; $('#view').innerHTML = V[UI.view](); $('#view').scrollTop = sc;
   if (UI.view === 'settings') renderBioRow();

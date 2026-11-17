@@ -151,6 +151,11 @@ function computeReminders(D, today) {
     if (r.type === 'subscription' && today.slice(8) === '01' && (!r.reviewed || diff(r.reviewed, today) >= 365) && diff(r.startDate || today, today) >= 300)
       out.push({key: `subrev:${r.id}:${today.slice(0, 7)}`, title: `Still using ${r.name}?`, body: `It costs ${eur(r.freq === 'year' ? r.amount : r.amount * 12)} a year. Open Bills & subscriptions to keep or cancel it.`});
   }
+  for (const g of D.gifts || []) {
+    if (g.status === 'bought' || !g.date || g.date < today) continue;
+    const d = diff(today, g.date), who = g.personId ? ((D.people || []).find(p => p.id === g.personId) || {}).name || '' : (g.who || '');
+    if (d === lead || d === 3 || d === 1) out.push({key: `gift:${g.id}:${g.date}:${d}`, title: `Gift for ${who || 'someone'} ${when(d)}`, body: [g.budget ? eur(g.budget) + ' set aside' : '', g.idea ? 'idea: ' + g.idea : ''].filter(Boolean).join(' · ') || 'Not bought yet'});
+  }
   if (pd(today).getDay() === 1) out.push({key: `week:${today}`, title: 'Your week is ready', body: 'Open Oracle 2 to see this week\'s bills, birthdays, tasks and budget.'});
   const wd = (pd(today).getDay() + 6) % 7;
   for (const g of D.lifeGoals || []) {
