@@ -1,6 +1,6 @@
 /* Oracle 2 service worker — offline use, updates, background reminders.
    Bump VERSION on every release: installed copies pick it up on their next open. */
-const VERSION = '2.6.0';
+const VERSION = '2.6.1';
 const CACHE = 'oracle2-' + VERSION;
 const ASSETS = ['./', './index.html', './style.css', './app.js', './reminders.js', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './apple-touch-icon.png'];
 importScripts('./reminders.js');

@@ -61,7 +61,7 @@ function parseDateWord(w) {
 }
 
 // ------------------------------------------------------------------ data, storage & sync
-const APP_VERSION = '2.6.0', DATA_VERSION = 2;
+const APP_VERSION = '2.6.1', DATA_VERSION = 2;
 const COLLS = ['lifeGoals', 'wishlist', 'people', 'tasks', 'paychecks', 'transactions', 'savingsMoves', 'recurring', 'goals', 'workouts', 'body', 'focus', 'media', 'assets', 'gifts'];
 let D = null, saveTimer = null, SNAP = {}, SYNC = null, NOTIFIED = {};
 const UI = {view: 'today', moneyTab: 'overview', gymTab: 'overview', recTab: 'people', calMonth: TODAY.slice(0, 7), calSel: TODAY, gymEx: null, txFilter: 'period', search: '', importPreview: null, sync: {state: 'off', msg: ''}};
@@ -371,8 +371,10 @@ function safeToSpend(p) {
   const todayAllow = (weekAllow - spentPrev) / daysLeft;
   return {weekAllow, weekLeft: weekAllow - spentPrev - spentToday, todayAllow, todayLeft: todayAllow - spentToday, spentToday, spentWeek: spentPrev + spentToday, daysLeft, weekStart, weekEnd};
 }
-function savingsBalance(at = '9999') {
-  const dep = sum(D.savingsMoves.filter(m => m.date <= at), m => m.kind === 'withdraw' ? -m.amount : m.amount);
+const moveVal = m => m.kind === 'withdraw' ? -m.amount : m.amount; // a 'correction' is signed: + adds, − removes
+const isCorr = m => m.kind === 'correction';
+function savingsBalance(at = '9999', skipId) {
+  const dep = sum(D.savingsMoves.filter(m => m.date <= at && m.id !== skipId), moveVal);
   const spent = sum(D.transactions.filter(t => t.source === 'savings' && t.date <= at), t => t.amount);
   return (+D.settings.startingSavings || 0) + dep - spent;
 }
@@ -583,7 +585,7 @@ function eventsOn(date) {
   for (const w of D.workouts) if (w.date.slice(0, 10) === date) ev.push({k: 'gym', g: '◆', c: 'var(--accent)', t: w.title, s: `${w.exercises.length} exercises · ${wSets(w)} sets`});
   for (const p of D.paychecks) if (p.date === date) ev.push({k: 'income', g: '+', c: 'var(--good)', t: 'Paycheck', s: eur(p.amount)});
   for (const t of D.transactions) if (t.date === date) ev.push({k: 'spend', g: '€', c: PAL[t.bucket] || 'var(--muted)', t: `${t.category}${t.note ? ' · ' + t.note : ''}`, s: eur(t.amount) + (t.source === 'savings' ? ' · from savings' : ''), amt: t.amount});
-  for (const m of D.savingsMoves) if (m.date === date && !m.paycheckId) ev.push({k: 'save', g: '↗', c: 'var(--savings)', t: m.kind === 'withdraw' ? 'Savings withdrawal' : (m.note || 'To savings'), s: eur(m.amount)});
+  for (const m of D.savingsMoves) if (m.date === date && !m.paycheckId) ev.push({k: 'save', g: '↗', c: 'var(--savings)', t: isCorr(m) ? 'Savings correction' : m.kind === 'withdraw' ? 'Savings withdrawal' : (m.note || 'To savings'), s: (isCorr(m) && m.amount > 0 ? '+' : '') + eur(m.amount)});
   for (const o of billOccurrences(date, date)) ev.push({k: 'bill', g: o.paid ? '✓' : '▲', c: o.paid ? 'var(--muted)' : 'var(--warn)', t: o.r.name, s: `${eur(o.r.amount)} · ${o.r.type}${o.paid ? ' · paid' : ''}`});
   for (const p of D.people) { const nb = nextBirthday(p.birthday); const md = (p.birthday || '').slice(-5);
     if (md && date.slice(5) === md) { const by = birthYear(p.birthday); ev.push({k: 'bday', g: '✦', c: 'var(--extra)', t: `${p.name}'s birthday`, s: by ? `turns ${+date.slice(0, 4) - by}` : ''}); } }
@@ -912,10 +914,16 @@ V.money_tx = () => {
   if (UI.txFilter === 'period' && p) tx = tx.filter(t => t.date >= p.start && t.date <= p.end);
   if (UI.txFilter === 'savings') tx = tx.filter(t => t.source === 'savings');
   tx.sort((a, b) => a.date < b.date ? 1 : -1);
-  const rows = tx.map(t => `<div class="txr" onclick="A.expense('${t.id}')"><i class="dot" style="background:${PAL[t.bucket] || 'var(--muted)'}"></i><span class="txd">${fd(t.date)}</span><span class="txa">${eur(t.amount)}</span><span class="txt"><span>${esc(t.category)}</span>${t.note ? ` <span class="muted">· ${esc(t.note)}</span>` : ''}</span>${t.source === 'savings' ? '<span class="txs" title="Paid from savings">↗</span>' : ''}</div>`).join('');
-  return `<div class="card"><h3 class="txhead"><span class="seg">${[['period', 'This period'], ['all', 'All'], ['savings', 'From savings']].map(([k, l]) => `<button class="${UI.txFilter === k ? 'on' : ''}" onclick="UI.txFilter='${k}';render()">${l}</button>`).join('')}</span><span class="act muted">${tx.length} · ${eur(sum(tx, t => t.amount))}</span></h3>
-  <div class="only-mob">${legend([[PAL.needs, 'needs'], [PAL.wants, 'wants'], [PAL.savings, 'savings']])}<div class="small faint" style="margin:4px 0 8px"><span class="warn">↗</span> = paid from savings · tap a row to edit</div>${tx.length ? `<div class="txlist">${rows}</div>` : '<div class="empty">No transactions</div>'}</div>
-  <div class="only-desk">${tx.length ? `<table><tr><th>Date</th><th>Category</th><th>Note</th><th>Bucket</th><th>Paid from</th><th class="n">Amount</th><th></th></tr>${tx.map(t => `<tr><td class="muted">${fdl(t.date)}</td><td>${esc(t.category)}</td><td class="muted">${esc(t.note || '')}</td><td><span class="tag ${t.bucket}">${t.bucket}</span></td><td class="${t.source === 'savings' ? 'warn' : 'muted'}">${t.source === 'savings' ? 'savings' : 'salary'}</td><td class="n">${eur(t.amount)}</td><td class="n"><button class="btn sm ghost" onclick="A.expense('${t.id}')">edit</button></td></tr>`).join('')}</table>` : '<div class="empty">No transactions</div>'}</div></div>`;
+  const corr = D.savingsMoves.filter(m => isCorr(m) && (UI.txFilter !== 'period' || !p || (m.date >= p.start && m.date <= p.end)));
+  const corrTx = corr.map(m => ({corr: m, date: m.date}));
+  const all = [...tx, ...corrTx].sort((a, b) => a.date < b.date ? 1 : -1);
+  const sg = v => (v > 0 ? '+' : '') + eur(v);
+  const cRow = m => `<div class="txr corr" onclick="A.savCorrect('${m.id}')"><i class="dot" style="background:var(--muted)"></i><span class="txd">${fd(m.date)}</span><span class="txa ${m.amount < 0 ? 'bad' : 'good'}">${sg(m.amount)}</span><span class="txt"><span>Manual correction</span> <span class="muted">· savings → ${eur(m.to ?? savingsBalance(m.date))}${m.note ? ' · ' + esc(m.note) : ''}</span></span></div>`;
+  const rows = all.map(t => t.corr ? cRow(t.corr) : `<div class="txr" onclick="A.expense('${t.id}')"><i class="dot" style="background:${PAL[t.bucket] || 'var(--muted)'}"></i><span class="txd">${fd(t.date)}</span><span class="txa">${eur(t.amount)}</span><span class="txt"><span>${esc(t.category)}</span>${t.note ? ` <span class="muted">· ${esc(t.note)}</span>` : ''}</span>${t.source === 'savings' ? '<span class="txs" title="Paid from savings">↗</span>' : ''}</div>`).join('');
+  const empty = !all.length;
+  return `<div class="card"><h3 class="txhead"><span class="seg">${[['period', 'This period'], ['all', 'All'], ['savings', 'From savings']].map(([k, l]) => `<button class="${UI.txFilter === k ? 'on' : ''}" onclick="UI.txFilter='${k}';render()">${l}</button>`).join('')}</span><span class="act muted">${tx.length} · ${eur(sum(tx, t => t.amount))}${corr.length ? ` · ${corr.length} correction${corr.length > 1 ? 's' : ''}` : ''}</span></h3>
+  <div class="only-mob">${legend([[PAL.needs, 'needs'], [PAL.wants, 'wants'], [PAL.savings, 'savings']])}<div class="small faint" style="margin:4px 0 8px"><span class="warn">↗</span> = paid from savings · tap a row to edit</div>${!empty ? `<div class="txlist">${rows}</div>` : '<div class="empty">No transactions</div>'}</div>
+  <div class="only-desk">${!empty ? `<table><tr><th>Date</th><th>Category</th><th>Note</th><th>Bucket</th><th>Paid from</th><th class="n">Amount</th><th></th></tr>${all.map(t => t.corr ? `<tr class="corr"><td class="muted">${fdl(t.date)}</td><td>Manual correction</td><td class="muted">savings balance → ${eur(t.corr.to ?? savingsBalance(t.date))}${t.corr.note ? ' · ' + esc(t.corr.note) : ''}</td><td><span class="tag">—</span></td><td class="muted">not spending</td><td class="n ${t.corr.amount < 0 ? 'bad' : 'good'}">${sg(t.corr.amount)}</td><td class="n"><button class="btn sm ghost" onclick="A.savCorrect('${t.corr.id}')">edit</button></td></tr>` : `<tr><td class="muted">${fdl(t.date)}</td><td>${esc(t.category)}</td><td class="muted">${esc(t.note || '')}</td><td><span class="tag ${t.bucket}">${t.bucket}</span></td><td class="${t.source === 'savings' ? 'warn' : 'muted'}">${t.source === 'savings' ? 'savings' : 'salary'}</td><td class="n">${eur(t.amount)}</td><td class="n"><button class="btn sm ghost" onclick="A.expense('${t.id}')">edit</button></td></tr>`).join('')}</table>` : '<div class="empty">No transactions</div>'}</div></div>`;
 };
 V.money_bills = () => {
   const from = TODAY, to = addDays(TODAY, 45), occ = billOccurrences(addDays(TODAY.slice(0, 8) + '01', 0), to);
@@ -970,13 +978,13 @@ V.money_savings = () => {
   const bal = savingsBalance(), allocated = sum(D.goals, g => g.saved);
   const evDates = [...new Set([...D.savingsMoves.map(m => m.date), ...D.transactions.filter(t => t.source === 'savings').map(t => t.date)])].sort();
   const pts = evDates.map(d => ({x: d, y: savingsBalance(d)}));
-  const hist = [...D.savingsMoves.map(m => ({d: m.date, t: m.kind === 'withdraw' ? 'Withdrawal' : (m.note || 'Deposit'), a: m.kind === 'withdraw' ? -m.amount : m.amount})),
+  const hist = [...D.savingsMoves.map(m => ({d: m.date, t: isCorr(m) ? 'Manual correction' + (m.note ? ' · ' + m.note : '') : m.kind === 'withdraw' ? 'Withdrawal' : (m.note || 'Deposit'), a: moveVal(m)})),
     ...D.transactions.filter(t => t.source === 'savings').map(t => ({d: t.date, t: `${t.category}${t.note ? ' · ' + t.note : ''}`, a: -t.amount}))].sort((a, b) => a.d < b.d ? 1 : -1);
   const invested = sum(D.transactions.filter(t => t.category === 'Investing'), t => t.amount);
-  return `<div class="grid g4"><div class="card stat hero"><div class="lbl">Savings balance</div><div class="val">${eur(bal)}</div><div class="sub">${eur(bal - allocated)} not assigned to goals</div></div>
+  return `<div class="grid g4"><div class="card stat hero" style="cursor:pointer" onclick="A.savCorrect()" title="Correct the balance"><div class="lbl">Savings balance <span class="act" style="float:right"><button class="btn sm" onclick="event.stopPropagation();A.savCorrect()">✎ Correct</button></span></div><div class="val">${eur(bal)}</div><div class="sub">${eur(bal - allocated)} not assigned to goals</div></div>
     <div class="card stat"><div class="lbl">Invested (all time)</div><div class="val">${eur0(invested)}</div><div class="sub">category "Investing"</div></div>
-    <div class="card stat"><div class="lbl">Added this year</div><div class="val">${eur0(sum(D.savingsMoves.filter(m => m.date.startsWith(TODAY.slice(0, 4)) && m.kind !== 'withdraw'), m => m.amount))}</div><div class="sub">from paychecks + leftovers</div></div>
-    <div class="card stat"><div class="lbl">Manual</div><div class="row wrap mt"><button class="btn sm" onclick="A.saveMove('deposit')">+ Deposit</button><button class="btn sm" onclick="A.saveMove('withdraw')">− Withdraw</button></div></div></div>
+    <div class="card stat"><div class="lbl">Added this year</div><div class="val">${eur0(sum(D.savingsMoves.filter(m => m.date.startsWith(TODAY.slice(0, 4)) && m.kind === 'deposit'), m => m.amount))}</div><div class="sub">from paychecks + leftovers</div></div>
+    <div class="card stat"><div class="lbl">Manual</div><div class="row wrap mt"><button class="btn sm" onclick="A.saveMove('deposit')">+ Deposit</button><button class="btn sm" onclick="A.saveMove('withdraw')">− Withdraw</button><button class="btn sm" onclick="A.savCorrect()">✎ Correct balance</button></div></div></div>
     <div class="grid g2 mt">${coverageCard()}<div class="card"><h3>Balance over time</h3>${pts.length ? lineChart([{points: pts, color: 'var(--savings)'}], {fmt: v => eur(v, 0)}) : '<div class="empty">No savings activity yet</div>'}</div>
     <div class="card"><h3>Savings goals <span class="act"><button class="btn sm" onclick="A.goal()">+ Goal</button></span></h3>${D.goals.length ? D.goals.map(g => `<div style="margin:10px 0" data-tip="${esc(g.name)}\n${eur(g.saved)} of ${eur(g.target)}">
       <div class="row small"><span>${esc(g.name)}</span><span class="sp"></span><span class="muted">${eur0(g.saved)} / ${eur0(g.target)}</span></div>
@@ -1202,7 +1210,7 @@ function limitsCard(compact) {
 function periodSpend(a, b) {
   const tx = D.transactions.filter(t => t.date >= a && t.date <= b);
   const by = k => sum(tx.filter(t => t.bucket === k), t => t.amount);
-  const saved = sum(D.savingsMoves.filter(m => m.date >= a && m.date <= b), m => m.kind === 'withdraw' ? -m.amount : m.amount) - sum(tx.filter(t => t.source === 'savings'), t => t.amount);
+  const saved = sum(D.savingsMoves.filter(m => m.date >= a && m.date <= b && !isCorr(m)), moveVal) - sum(tx.filter(t => t.source === 'savings'), t => t.amount);
   return {needs: by('needs'), wants: by('wants'), saved};
 }
 function coverage() {
@@ -1240,7 +1248,7 @@ function monthStats(ym) {
   const spent = sum(tx, t => t.amount), byB = {needs: 0, wants: 0, savings: 0}; for (const t of tx) byB[t.bucket] = (byB[t.bucket] || 0) + t.amount;
   const cats = {}; for (const t of tx) cats[t.category] = (cats[t.category] || 0) + t.amount;
   const income = sum(D.paychecks.filter(p => inM(p.date)), p => p.amount);
-  const saved = sum(D.savingsMoves.filter(m => inM(m.date)), m => m.kind === 'withdraw' ? -m.amount : m.amount) - sum(tx.filter(t => t.source === 'savings'), t => t.amount);
+  const saved = sum(D.savingsMoves.filter(m => inM(m.date) && !isCorr(m)), moveVal) - sum(tx.filter(t => t.source === 'savings'), t => t.amount);
   const fromSavings = sum(tx.filter(t => t.source === 'savings'), t => t.amount);
   const bills = tx.filter(t => t.recurringId);
   const bought = D.wishlist.filter(w => w.bought && inM(w.boughtAt));
@@ -1435,6 +1443,10 @@ const HELP = [
   ['Calendar, records & reminders', `<p>The <b>Calendar</b> shows everything per day: ◆ workouts, − spending, + income, ▲ bills due, ✓ bills paid, ✦ birthdays, ✧ name days, ⚑ holidays, ◇ planned workouts, □ tasks, ◎ goal deadlines, ★ goals achieved, finished books/games/films. Tap a day for the details.</p>
     <p><b>Records</b> holds people (birthday, name day, keep in touch, gift ideas), tasks & notes, and the media log.</p>
     <p><b>Reminders</b>: birthdays and bills at least 7 days ahead (change in Settings), the day before and on the day; a weekly summary every Monday. Turn on notifications in Settings. On Android and desktop they also arrive while the app is closed (checked a few times a day); on iPhone they show when you open the app.</p>`],
+  ['Correcting your savings balance', `<p>If the savings balance in Oracle doesn't match your real savings (for example after a paycheck put in the wrong amount), go to <b>Money → Savings & goals</b> and press <b>✎ Correct</b> on the balance (or tap the balance).</p>
+    <ul><li>Type what your savings really are. Oracle shows the difference and saves it as a <b>manual correction</b>.</li>
+    <li>The correction appears in <b>Money → Transactions</b> (in grey, marked “Manual correction”) and in the savings history, but it is <b>not spending</b>: Needs, Wants, safe to spend and the savings budget are untouched, and it doesn't count as money saved in your monthly review.</li>
+    <li>Tap the correction in Transactions to change it or delete it.</li></ul>`],
   ['Gifts', `<p><b>Gifts</b> is a Wants category (next to Eating out and Hobbies), and <b>Records → Gifts</b> lets you plan them ahead.</p>
     <ul><li><b>Plan a gift</b>: pick the person and the occasion — birthday, name day, Christmas, wedding, anniversary or any event. The date fills itself in from their birthday / name day, and their gift ideas are copied in. Add a budget.</li>
     <li>The budget is <b>set aside from Wants</b> in the pay period of that date, so <i>safe to spend</i> and <i>Wants left</i> already count it (Money → Overview shows “€40 for gifts”).</li>
@@ -1556,6 +1568,7 @@ async function tourEnd() {
 
 // ---------------- what's new (shown once on each device after an update)
 const CHANGELOG = [
+  {v: '2.6.1', items: ['Correct your savings balance by hand: Money → Savings & goals → ✎ Correct', 'Corrections show in Transactions as “Manual correction” and never touch Needs, Wants or the savings budget']},
   {v: '2.6.0', items: ['Gifts: a new Wants category, plus Records → Gifts to plan gifts for birthdays, name days, Christmas and other events', 'A planned gift\'s budget is set aside from Wants in its pay period — safe to spend already counts it', '“Bought” turns a plan into a Gifts expense; see what you spend per person', 'Reminders and calendar entries for planned gifts; Today shows gifts coming up', 'Redesigned lock screen: bigger keys spread across the screen, faster response, live wait countdown']},
   {v: '2.5.0', items: ['Hide amounts — the eye button at the top', 'Optional app lock with a PIN per device; fingerprint / face on phones', 'Your own colours: accent, background and text size (Settings → Appearance)', 'Bulgarian holidays & name days in the calendar, Today and reminders — paydays skip holidays', 'Keep in touch: get nudged to call people you haven\'t talked to in a while', 'Focus timer (Goals → Focus timer)', 'Media log for books, games, films & series (Records → Media log)', 'Net worth & investments (Money → Net worth)', 'Subscription check-up: yearly bills, price-change history, a yearly "still using it?"', 'Training plan with fixed weekdays (Gym → Plan)', 'App-icon shortcuts: long-press / right-click the icon', 'Settings sorted into sections; Help covers everything new']},
   {v: '2.4.1', items: ['Wishlist fits phone screens: one compact row per item — coloured dot for need/want, price on the right, "fits this week" underneath, tap a name to edit']},
@@ -1674,6 +1687,30 @@ const A = {
   saveMove(kind) {
     modal(`<h2>${kind === 'withdraw' ? 'Withdraw from' : 'Deposit to'} savings</h2><div class="formgrid"><label class="f">Amount (€)<input type="number" step="0.01" id="sm_amt"></label><label class="f">Date<input type="date" id="sm_date" value="${TODAY}"></label><label class="f full">Note<input id="sm_note"></label></div>
       <div class="row mt"><span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.saveMoveSave('${kind}')">Save</button></div>`);
+  },
+  savCorrect(id) {
+    const m = id ? D.savingsMoves.find(x => x.id === id) : null, date = m ? m.date : TODAY, now = savingsBalance(date, id);
+    modal(`<h2>${m ? 'Edit correction' : 'Correct savings balance'}</h2>
+      <div class="small muted" style="margin-bottom:10px;line-height:1.7">Type what your savings really are. The difference is saved as a <b>manual correction</b> — it shows in Transactions but isn't spending, so Needs, Wants and the savings budget stay untouched.</div>
+      <div class="formgrid"><label class="f">Oracle says${m ? ' (without this correction)' : ''}<input disabled value="${eur(now)}"></label>
+      <label class="f">Actual balance (€)<input type="number" inputmode="decimal" step="0.01" id="sc_to" value="${r2(now + (m ? m.amount : 0))}" oninput="A.savCorrPrev()" data-base="${now}"></label>
+      <label class="f">As of<input type="date" id="sc_d" value="${date}" onchange="$('#sc_to').dataset.base=savingsBalance(this.value,'${id || ''}');A.savCorrPrev()"></label>
+      <label class="f">Note (optional)<input id="sc_n" value="${esc(m ? m.note || '' : '')}" placeholder="checked bank app"></label></div>
+      <div class="mt" id="sc_pv"></div>
+      <div class="row mt">${m ? `<button class="btn ghost danger" onclick="A.del('savingsMoves','${id}');closeModal()">Delete</button>` : ''}<span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.savCorrSave('${id || ''}')">Save</button></div>`);
+    A.savCorrPrev(); setTimeout(() => $('#sc_to')?.select(), 50);
+  },
+  savCorrPrev() {
+    const i = $('#sc_to'), dlt = r2(num(i.value) - +i.dataset.base), el = $('#sc_pv');
+    el.innerHTML = i.value === '' ? '' : Math.abs(dlt) < .005 ? '<span class="small muted">No difference — nothing to correct.</span>' : `<span class="small">Correction: <b class="${dlt < 0 ? 'bad' : 'good'}">${dlt > 0 ? '+' : ''}${eur(dlt)}</b> → balance <b>${eur(num(i.value))}</b></span>`;
+  },
+  savCorrSave(id) {
+    const to = r2(num(val('sc_to'))), date = val('sc_d') || TODAY; if (val('sc_to') === '') return toast('Type the actual balance');
+    const dlt = r2(to - savingsBalance(date, id));
+    if (id) D.savingsMoves = D.savingsMoves.filter(x => x.id !== id);
+    if (Math.abs(dlt) < .005) { closeModal(); commit(); return toast(id ? 'Correction removed — no difference left' : 'Balance already matches'); }
+    D.savingsMoves.push({id: id || uid(), date, amount: dlt, kind: 'correction', to, note: val('sc_n')});
+    closeModal(); commit(); toast(`Savings corrected ${dlt > 0 ? '+' : ''}${eur(dlt)} → ${eur(savingsBalance())}`);
   },
   saveMoveSave(kind) { const a = r2(num(val('sm_amt'))); if (a <= 0) return; D.savingsMoves.push({id: uid(), date: val('sm_date'), amount: a, kind, note: val('sm_note') || (kind === 'withdraw' ? 'Withdrawal' : 'Deposit')}); closeModal(); commit(); },
   goal(id) {
