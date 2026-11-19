@@ -61,7 +61,7 @@ function parseDateWord(w) {
 }
 
 // ------------------------------------------------------------------ data, storage & sync
-const APP_VERSION = '2.6.1', DATA_VERSION = 2;
+const APP_VERSION = '2.7.0', DATA_VERSION = 2;
 const COLLS = ['lifeGoals', 'wishlist', 'people', 'tasks', 'paychecks', 'transactions', 'savingsMoves', 'recurring', 'goals', 'workouts', 'body', 'focus', 'media', 'assets', 'gifts'];
 let D = null, saveTimer = null, SNAP = {}, SYNC = null, NOTIFIED = {};
 const UI = {view: 'today', moneyTab: 'overview', gymTab: 'overview', recTab: 'people', calMonth: TODAY.slice(0, 7), calSel: TODAY, gymEx: null, txFilter: 'period', search: '', importPreview: null, sync: {state: 'off', msg: ''}};
@@ -594,7 +594,8 @@ function eventsOn(date) {
   const hol = holidayOn(date); if (hol) ev.unshift({k: 'holiday', g: '⚑', c: 'var(--bad)', t: hol, s: 'Public holiday in Bulgaria'});
   if (bgOn()) for (const p of D.people) { const n = nameDayOf(p, +date.slice(0, 4)); if (n && n.date === date) ev.push({k: 'nameday', g: '✧', c: 'var(--extra)', t: `${p.name}'s name day`, s: n.feast}); }
   if (date >= TODAY && !trainedOn(date) && planOn(date)) ev.push({k: 'plan', g: '◇', c: 'var(--muted)', t: `Plan: ${planOn(date)}`, s: 'planned workout'});
-  for (const g of D.gifts) if (g.date === date) ev.push({k: 'gift', g: '❖', c: PAL.wants, t: `Gift: ${giftTitle(g)}`, s: g.status === 'bought' ? `bought · ${eur0(+g.paid || 0)}` : (g.budget ? eur0(+g.budget) + ' planned' : 'planned')});
+  for (const g of D.gifts) if (g.date === date && isRecv(g)) ev.push({k: 'gift', g: '❖', c: 'var(--extra)', t: `Received: ${g.item || 'gift'}`, s: `from ${giftWho(g) || '?'}`});
+  for (const g of D.gifts) if (g.date === date && !isRecv(g)) ev.push({k: 'gift', g: '❖', c: PAL.wants, t: `Gift: ${giftTitle(g)}`, s: g.status === 'bought' ? `bought · ${eur0(+g.paid || 0)}` : (g.budget ? eur0(+g.budget) + ' planned' : 'planned')});
   for (const m of D.media) if (m.status === 'done' && m.finished === date) ev.push({k: 'media', g: mKind(m.kind)[2], c: 'var(--accent)', t: `Finished: ${m.title}`, s: m.rating ? '★'.repeat(m.rating) : mKind(m.kind)[1]});
   for (const f of D.focus) if (f.date === date) { const x = ev.find(e => e.k === 'focus'); if (x) { x.min += f.min; x.s = hm(x.min); } else ev.push({k: 'focus', g: '◷', c: 'var(--muted)', t: 'Focus', s: hm(f.min), min: f.min}); }
   for (const b of D.body) if (b.date === date) ev.push({k: 'body', g: '○', c: 'var(--muted)', t: 'Body log', s: [b.weight && b.weight + ' kg', b.waist && b.waist + ' cm waist'].filter(Boolean).join(' · ')});
@@ -607,7 +608,9 @@ const OCCASIONS = [['birthday', 'Birthday'], ['nameday', 'Name day'], ['christma
 const occName = o => (OCCASIONS.find(x => x[0] === o) || OCCASIONS[5])[1];
 const giftWho = g => g.personId ? ((D.people.find(p => p.id === g.personId) || {}).name || g.who || '?') : (g.who || '');
 const giftTitle = g => `${giftWho(g) || g.title || 'Gift'}${g.occasion ? ' · ' + (g.occasion === 'other' ? (g.title || 'event') : occName(g.occasion).toLowerCase()) : ''}`;
-const giftsPlanned = () => D.gifts.filter(g => g.status !== 'bought');
+const isRecv = g => g.dir === 'in';
+const giftsPlanned = () => D.gifts.filter(g => !isRecv(g) && g.status !== 'bought');
+const giftsReceived = () => D.gifts.filter(isRecv).sort((a, b) => a.date < b.date ? 1 : -1);
 // planned (not yet bought) gift budgets dated inside [from, to] — these are set aside from Wants
 const giftReserve = (from, to) => sum(giftsPlanned().filter(g => g.date >= from && g.date <= to), g => +g.budget || 0);
 function occasionDate(o, p) {
@@ -616,7 +619,7 @@ function occasionDate(o, p) {
   if (o === 'christmas') { const c = TODAY.slice(0, 4) + '-12-25'; return c >= TODAY ? c : (+TODAY.slice(0, 4) + 1) + '-12-25'; }
   return null;
 }
-const hasGiftFor = (pid, occ, date) => D.gifts.some(g => g.personId === pid && g.occasion === occ && g.date === date);
+const hasGiftFor = (pid, occ, date) => D.gifts.some(g => !isRecv(g) && g.personId === pid && g.occasion === occ && g.date === date);
 // occasions in the next `days` days that have no gift planned yet
 function giftGaps(days = 45) {
   const out = [], lim = addDays(TODAY, days);
@@ -626,9 +629,22 @@ function giftGaps(days = 45) {
   }
   return out.sort((a, b) => a.date < b.date ? -1 : 1);
 }
+// fields shared by "received as a gift" (wishlist) and "+ Received gift" (Records → Gifts)
+function recvFields(g = {}) {
+  return `<label class="f">From<select id="rg_p" onchange="$('#rg_whow').style.display=this.value?'none':''"><option value="">— someone not in People —</option>${D.people.slice().sort((a, b) => a.name.localeCompare(b.name)).map(x => `<option value="${x.id}" ${g.personId === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+    <label class="f" id="rg_whow" style="${g.personId ? 'display:none' : ''}">Name<input id="rg_who" value="${esc(g.who || '')}" placeholder="who gave it"></label>
+    <label class="f">Date<input type="date" id="rg_d" value="${g.date || TODAY}"></label>
+    <label class="f">Occasion (optional)<select id="rg_o"><option value="">—</option>${OCCASIONS.map(([k, l]) => `<option value="${k}" ${g.occasion === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    <label class="f">What<input id="rg_i" value="${esc(g.item || '')}" placeholder="the gift"></label>
+    <label class="f">Worth about (€, optional)<input type="number" inputmode="decimal" step="0.01" id="rg_w" value="${g.worth || ''}"></label>`;
+}
+function recvRead() {
+  const g = {personId: val('rg_p'), who: val('rg_p') ? '' : val('rg_who'), date: val('rg_d') || TODAY, occasion: val('rg_o'), item: val('rg_i'), worth: val('rg_w') === '' ? null : r2(num(val('rg_w')))};
+  if (!g.personId && !g.who) { toast('Who gave it to you?'); return null; } return g;
+}
 function giftsBody(q) {
   const yr = TODAY.slice(0, 4), per = currentPeriod(), match = g => !q || (giftTitle(g) + ' ' + (g.idea || '')).toLowerCase().includes(q);
-  const plan = giftsPlanned().filter(match).sort((a, b) => a.date < b.date ? -1 : 1), given = D.gifts.filter(g => g.status === 'bought' && match(g)).sort((a, b) => (a.boughtAt || a.date) < (b.boughtAt || b.date) ? 1 : -1);
+  const plan = giftsPlanned().filter(match).sort((a, b) => a.date < b.date ? -1 : 1), given = D.gifts.filter(g => !isRecv(g) && g.status === 'bought' && match(g)).sort((a, b) => (a.boughtAt || a.date) < (b.boughtAt || b.date) ? 1 : -1);
   const spentYr = sum(D.transactions.filter(t => t.category === 'Gifts' && t.date.startsWith(yr)), t => t.amount), gaps = giftGaps(45);
   const byP = {}; for (const t of D.transactions.filter(t => t.category === 'Gifts' && t.date.startsWith(yr))) { const g = D.gifts.find(x => x.txId === t.id), k = g ? giftWho(g) || 'Other' : 'Other'; byP[k] = (byP[k] || 0) + t.amount; }
   for (const g of giftsPlanned().filter(g => g.date.startsWith(yr))) { const k = giftWho(g) || 'Other'; byP[k] = (byP[k] || 0) + (+g.budget || 0); }
@@ -643,6 +659,7 @@ function giftsBody(q) {
       ${gaps.length ? `<div class="card briefing"><h3>Coming up — no gift yet</h3><div class="list">${gaps.map(x => `<div class="li wrow"><span class="small muted" style="width:62px">${fd(x.date)}</span><span class="t">${esc(x.p.name)} <span class="muted small">· ${occName(x.occ).toLowerCase()}</span>${x.p.gifts ? `<div class="small faint">ideas: ${esc(x.p.gifts)}</div>` : ''}</span><span class="small muted hide-m">${dd(x.date)}</span><button class="btn sm pri" onclick="A.gift(null,{personId:'${x.p.id}',occasion:'${x.occ}',date:'${x.date}'})">Plan gift</button></div>`).join('')}</div></div>` : ''}
       <div class="card"><h3>Planned · ${plan.length} <span class="act muted">${eur0(sum(plan, g => +g.budget || 0))}</span></h3><div class="list">${plan.map(prow).join('') || '<div class="empty">Plan a gift for a birthday, name day, Christmas or any event — its budget is set aside from Wants in that pay period.</div>'}</div></div>
       <div class="card"><h3>Given · ${given.length}</h3><div class="list">${given.slice(0, 20).map(g => `<div class="li wrow"><span class="small muted" style="width:62px">${fd(g.boughtAt || g.date)}</span><span class="t" style="cursor:pointer" onclick="A.gift('${g.id}')">${esc(giftTitle(g))}${g.idea ? ` <span class="small faint">· ${esc(g.idea)}</span>` : ''}</span><span>${eur(+g.paid || 0)}</span><span class="small ${(+g.paid || 0) > (+g.budget || 0) && g.budget ? 'warn' : 'faint'} hide-m" style="width:78px;text-align:right">${g.budget ? 'budget ' + eur0(+g.budget) : ''}</span></div>`).join('') || '<div class="empty small">—</div>'}</div></div></div>
+      <div class="card"><h3>Received · ${giftsReceived().length} <span class="act"><button class="btn sm" onclick="A.recvGift()">+ Received gift</button></span></h3><div class="list">${giftsReceived().filter(match).slice(0, 25).map(g => `<div class="li wrow" style="cursor:pointer" onclick="A.recvGift('${g.id}')"><span class="small muted" style="width:62px">${fd(g.date)}</span><span class="t" style="white-space:normal">${esc(g.item || 'Gift')}<div class="small faint">from ${esc(giftWho(g) || '?')}${g.occasion ? ' · ' + (g.occasion === 'other' ? (g.title || 'event') : occName(g.occasion).toLowerCase()) : ''}${g.wishId ? ' · from your wishlist' : ''}</div></span><span class="small muted">${g.worth ? '≈ ' + eur0(+g.worth) : ''}</span></div>`).join('') || '<div class="empty small">Gifts you get — from your wishlist or not — are listed here, so you remember who gave you what.</div>'}</div></div></div>
       <div class="grid" style="align-content:start"><div class="card"><h3>By person · ${yr}</h3>${Object.keys(byP).length ? hbars(Object.entries(byP).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([l, v]) => ({label: l, value: v, color: PAL.wants, right: eur0(v)}))) : '<div class="empty small">Spent and planned gifts per person show here</div>'}
         <div class="small faint mt">Includes gifts still planned this year.</div></div>
       <div class="card"><h3>How it works</h3><div class="small muted" style="line-height:1.8">Plan a gift with a budget → that amount is <b>set aside from Wants</b> in the pay period of the gift's date, so "safe to spend" already accounts for it.<br>Press <b>Bought</b> → it becomes a <b>Gifts</b> expense and the set-aside amount is released.<br>Gift ideas from each person's card are filled in for you.</div></div></div></div>`;
@@ -966,13 +983,13 @@ V.money_wish = () => {
   return `<div class="grid g4"><div class="card stat"><div class="lbl">Needs on list</div><div class="val">${eur0(tot('needs'))}</div><div class="sub">${eur(left.needs)} needs left this month</div></div>
     <div class="card stat"><div class="lbl">Wants on list</div><div class="val">${eur0(tot('wants'))}</div><div class="sub">${eur(left.wants)} wants left · ${s ? eur(s.weekLeft) : '—'} this week</div></div>
     <div class="card stat"><div class="lbl">Savings</div><div class="val">${eur0(bal)}</div><div class="sub">if paid from savings</div></div>
-    <div class="card stat"><div class="lbl">Bought</div><div class="val">${bought.length}</div><div class="sub">${eur0(sum(bought, w => w.paid || w.price))} spent from this list</div></div></div>
+    <div class="card stat"><div class="lbl">Got</div><div class="val">${bought.length}</div><div class="sub">${eur0(sum(bought.filter(w => !w.gift), w => w.paid || w.price))} spent${bought.some(w => w.gift) ? ` · ${(n => n === 1 ? '1 received as a gift' : n + ' received as gifts')(bought.filter(w => w.gift).length)}` : ' from this list'}</div></div></div>
   <div class="card mt"><h3 class="wishhead"><span class="row wrap"><span class="seg">${[['all', 'All'], ['needs', 'Needs'], ['wants', 'Wants']].map(([k, l]) => `<button class="${f === k ? 'on' : ''}" onclick="UI.wishFilter='${k}';render()">${l}</button>`).join('')}</span>
       <select class="wsort" onchange="UI.wishSort=this.value;render()">${[['added', 'Newest first'], ['price', 'Cheapest first'], ['priceDesc', 'Most expensive first'], ['name', 'A–Z']].map(([k, l]) => `<option value="${k}" ${sort === k ? 'selected' : ''}>${l}</option>`).join('')}</select></span>
       <span class="act"><button class="btn pri sm" onclick="A.wish()">+ Add item</button></span></h3>
     <div class="list">${items.map(row).join('') || '<div class="empty">Nothing on the list. Add things you want or need to buy.</div>'}</div>
     <div class="small faint mt">${legend([[PAL.needs, 'need'], [PAL.wants, 'want']])}<div style="margin-top:4px">Tick an item when you buy it — you choose salary or savings, and it's taken from the right budget. Tap a name to edit.</div></div></div>
-  ${bought.length ? `<div class="card mt"><h3>Bought</h3><div class="list">${bought.slice(0, 20).map(w => `<div class="wr"><input type="checkbox" checked onchange="A.wishUnbuy('${w.id}')" title="Undo purchase"><div class="wm"><div class="wn faint" style="text-decoration:line-through"><i class="dot" style="background:${PAL[w.bucket]}"></i>${esc(w.name)}</div><div class="ws small muted">${fd(w.boughtAt)} · ${w.source === 'savings' ? '<span class="warn">↗</span> from savings' : 'from salary'}</div></div><div class="wp muted">${eur(w.paid ?? w.price)}</div></div>`).join('')}</div></div>` : ''}`;
+  ${bought.length ? `<div class="card mt"><h3>Got</h3><div class="list">${bought.slice(0, 20).map(w => `<div class="wr"><input type="checkbox" checked onchange="A.wishUnbuy('${w.id}')" title="${w.gift ? 'Put back on the wishlist' : 'Undo purchase'}"><div class="wm"><div class="wn faint" style="text-decoration:line-through"><i class="dot" style="background:${PAL[w.bucket]}"></i>${esc(w.name)}</div><div class="ws small muted">${fd(w.boughtAt)} · ${w.gift ? `<span style="color:var(--extra)">❖</span> gift from ${esc(giftWho(D.gifts.find(g => g.id === w.giftId) || {}) || '?')}` : w.source === 'savings' ? '<span class="warn">↗</span> from savings' : 'from salary'}</div></div><div class="wp muted">${w.gift ? `<span class="small faint">≈ </span>${eur0(w.price)}` : eur(w.paid ?? w.price)}</div></div>`).join('')}</div></div>` : ''}`;
 };
 V.money_savings = () => {
   const bal = savingsBalance(), allocated = sum(D.goals, g => g.saved);
@@ -1104,6 +1121,7 @@ V.records = () => {
         if (bg && !gap) return `<div class="row small" style="margin-top:6px;cursor:pointer" onclick="A.gift('${bg.id}')"><span class="good">✓</span><span>Gift bought · ${eur0(+bg.paid || 0)} for the ${occName(bg.occasion).toLowerCase()} ${fd(bg.date)}</span><span class="sp"></span><button class="btn sm ghost" onclick="event.stopPropagation();A.gift(null,{personId:'${p.id}'})">Plan gift</button></div>`;
         return g ? `<div class="row small" style="margin-top:6px;cursor:pointer" onclick="A.gift('${g.id}')"><span style="color:${PAL.wants}">❖</span><span>Gift ${eur0(+g.budget || 0)} · ${occName(g.occasion).toLowerCase()} ${fd(g.date)}${g.idea ? ` <span class="faint">— ${esc(g.idea)}</span>` : ''}</span><span class="sp"></span><button class="btn sm" onclick="event.stopPropagation();A.giftBuy('${g.id}')">Bought</button></div>`
           : `<div class="row small" style="margin-top:6px"><span style="color:${PAL.wants}">❖</span><span class="${gap ? 'warn' : 'faint'}">${gap ? `no gift for the ${occName(gap.occ).toLowerCase()} yet` : 'no gift planned'}</span><span class="sp"></span><button class="btn sm ${gap ? 'pri' : 'ghost'}" onclick="A.gift(null,{personId:'${p.id}'${gap ? `,occasion:'${gap.occ}',date:'${gap.date}'` : ''}})">Plan gift</button></div>`; })()}
+      ${(() => { const r = giftsReceived().filter(g => g.personId === p.id); return r.length ? `<div class="small" style="margin-top:6px"><span class="muted">Gave you:</span> ${r.slice(0, 3).map(g => `${esc(g.item || 'a gift')} <span class="faint">(${fd(g.date)}${g.date.slice(0, 4) !== TODAY.slice(0, 4) ? ' ' + g.date.slice(0, 4) : ''})</span>`).join(', ')}${r.length > 3 ? ` +${r.length - 3}` : ''}</div>` : ''; })()}
       ${p.gifts ? `<div class="small mt"><span class="muted">Gift ideas:</span> ${esc(p.gifts)}</div>` : ''}${p.notes ? `<div class="small muted mt">${esc(p.notes)}</div>` : ''}</div>`; }).join('') || '<div class="card"><div class="empty">No one added yet</div></div>'}</div>`;
   } else if (UI.recTab === 'media') body = mediaBody(q);
   else if (UI.recTab === 'gifts') body = giftsBody(q);
@@ -1453,7 +1471,8 @@ const HELP = [
     <li><b>Bought</b> (in Records → Gifts, on the person's card or in Today's Upcoming): enter what you paid — it becomes a Gifts expense and the set-aside money is released. Paying more or less than planned is shown.</li>
     <li><b>Coming up — no gift yet</b> lists birthdays and name days in the next 45 days without a plan. Each person's card in People shows their next gift or a <b>Plan gift</b> button.</li>
     <li>Gifts show on the calendar ❖ and you're reminded before the date. <i>By person</i> shows what you've spent and planned for everyone this year.</li>
-    <li>Quick add works too: <code>35 gifts mum</code>.</li></ul>`],
+    <li>Quick add works too: <code>35 gifts mum</code>.</li></ul>
+    <p><b>Gifts you receive</b>: when you tick a wishlist item choose <b>❖ Received as a gift</b> and pick who it's from — no expense is created and your budgets stay as they are. It moves to the wishlist's <i>Got</i> list marked “gift from …”. For gifts that weren't on the wishlist use <b>+ Received gift</b> in Records → Gifts. Everything you get is listed under <i>Received</i>, and each person's card shows <i>Gave you</i>. Untick the item (or delete the entry) to put it back on the wishlist.</p>`],
   ['Training plan', `<p><b>Gym → Plan</b>: type a workout name for each training day (e.g. Monday <i>Push</i>, Wednesday <i>Pull</i>, Friday <i>Legs</i>) and leave rest days empty — or tap a template and adjust it. The plan syncs to all your devices.</p>
     <ul><li><b>Today</b> shows <i>Today: Push</i> or <i>Rest day</i>; the calendar shows ◇ planned days ahead.</li><li>A planned day counts as done when a workout from that day is imported from Hevy.</li>
     <li><b>Sticking to the plan</b> shows ✓ done, ✗ missed and ◆ extra workouts for the last 4 weeks, and your % over 7 weeks.</li>
@@ -1568,6 +1587,7 @@ async function tourEnd() {
 
 // ---------------- what's new (shown once on each device after an update)
 const CHANGELOG = [
+  {v: '2.7.0', items: ['Wishlist: tick an item as “Received as a gift” — no expense, budgets untouched', 'Records → Gifts: a Received list and “+ Received gift” for gifts that weren\'t on the wishlist', 'People cards show what each person gave you']},
   {v: '2.6.1', items: ['Correct your savings balance by hand: Money → Savings & goals → ✎ Correct', 'Corrections show in Transactions as “Manual correction” and never touch Needs, Wants or the savings budget']},
   {v: '2.6.0', items: ['Gifts: a new Wants category, plus Records → Gifts to plan gifts for birthdays, name days, Christmas and other events', 'A planned gift\'s budget is set aside from Wants in its pay period — safe to spend already counts it', '“Bought” turns a plan into a Gifts expense; see what you spend per person', 'Reminders and calendar entries for planned gifts; Today shows gifts coming up', 'Redesigned lock screen: bigger keys spread across the screen, faster response, live wait countdown']},
   {v: '2.5.0', items: ['Hide amounts — the eye button at the top', 'Optional app lock with a PIN per device; fingerprint / face on phones', 'Your own colours: accent, background and text size (Settings → Appearance)', 'Bulgarian holidays & name days in the calendar, Today and reminders — paydays skip holidays', 'Keep in touch: get nudged to call people you haven\'t talked to in a while', 'Focus timer (Goals → Focus timer)', 'Media log for books, games, films & series (Records → Media log)', 'Net worth & investments (Money → Net worth)', 'Subscription check-up: yearly bills, price-change history, a yearly "still using it?"', 'Training plan with fixed weekdays (Gym → Plan)', 'App-icon shortcuts: long-press / right-click the icon', 'Settings sorted into sections; Help covers everything new']},
@@ -1737,11 +1757,14 @@ const A = {
   },
   wishBuy(id) {
     const w = D.wishlist.find(x => x.id === id);
-    modal(`<h2>Bought: ${esc(w.name)}</h2><div class="formgrid"><label class="f">Price paid (€)<input type="number" step="0.01" id="wb_amt" value="${w.price}"></label><label class="f">Date<input type="date" id="wb_date" value="${TODAY}"></label>
+    const pick = k => `this.parentNode.querySelectorAll('button').forEach(b=>b.classList.remove('on'));this.classList.add('on');$('#wb_buy').style.display='${k === 'buy' ? '' : 'none'}';$('#wb_gift').style.display='${k === 'gift' ? '' : 'none'}';$('#wb_go').textContent='${k === 'buy' ? 'Mark bought' : 'Save gift'}';$('#wb_go').dataset.k='${k}';$('#wbTitle').firstChild.textContent='${k === 'buy' ? 'Bought' : 'Received'}: '`;
+    modal(`<h2 id="wbTitle"><span>Bought: </span>${esc(w.name)}</h2><div style="margin-bottom:12px"><span class="seg"><button class="on" onclick="${pick('buy')}">Bought it</button><button onclick="${pick('gift')}">❖ Received as a gift</button></span></div>
+      <div id="wb_gift" style="display:none"><div class="formgrid">${recvFields({worth: w.price, item: w.name})}</div><div class="small faint mt">No expense is created — Needs, Wants and savings stay as they are.</div></div>
+      <div id="wb_buy"><div class="formgrid"><label class="f">Price paid (€)<input type="number" step="0.01" id="wb_amt" value="${w.price}"></label><label class="f">Date<input type="date" id="wb_date" value="${TODAY}"></label>
       <label class="f">Budget<select id="wb_b"><option value="needs" ${w.bucket === 'needs' ? 'selected' : ''}>needs</option><option value="wants" ${w.bucket === 'wants' ? 'selected' : ''}>wants</option></select></label><label class="f">Category<select id="wb_cat">${catOptions(w.category || 'Shopping')}</select></label>
-      <div class="full"><div class="small muted" style="margin-bottom:4px">PAID FROM</div><span class="seg" id="wb_src">${['salary', 'savings'].map(s => `<button class="${s === 'salary' ? 'on' : ''}" onclick="this.parentNode.querySelectorAll('button').forEach(b=>b.classList.remove('on'));this.classList.add('on')">${s === 'salary' ? 'This month\'s salary' : 'Savings'}</button>`).join('')}</span></div></div>
+      <div class="full"><div class="small muted" style="margin-bottom:4px">PAID FROM</div><span class="seg" id="wb_src">${['salary', 'savings'].map(s => `<button class="${s === 'salary' ? 'on' : ''}" onclick="this.parentNode.querySelectorAll('button').forEach(b=>b.classList.remove('on'));this.classList.add('on')">${s === 'salary' ? 'This month\'s salary' : 'Savings'}</button>`).join('')}</span></div></div></div>
       <label class="li small" style="cursor:pointer;margin-top:10px"><input type="checkbox" id="wb_media" onchange="$('#wb_mk').style.display=this.checked?'':'none'"><span class="t">Add to media log (book, game, film…)</span><select id="wb_mk" style="display:none">${MEDIA_KINDS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></label>
-      <div class="row mt"><span class="sp"></span><button class="btn ghost" onclick="closeModal();render()">Cancel</button><button class="btn pri" onclick="A.wishBuySave('${id}')">Mark bought</button></div>`);
+      <div class="row mt"><span class="sp"></span><button class="btn ghost" onclick="closeModal();render()">Cancel</button><button class="btn pri" id="wb_go" data-k="buy" onclick="this.dataset.k==='gift'?A.wishGiftSave('${id}'):A.wishBuySave('${id}')">Mark bought</button></div>`);
   },
   wishBuySave(id) {
     const w = D.wishlist.find(x => x.id === id), amt = r2(num(val('wb_amt'))); if (amt <= 0) return toast('Enter the price');
@@ -1751,8 +1774,16 @@ const A = {
     if ($('#wb_media').checked) D.media.push({id: uid(), added: TODAY, title: w.name, kind: val('wb_mk'), status: 'backlog', wishId: id});
     closeModal(); toast(`${w.name} · ${eur(amt)} from ${src}`); if (src === 'salary') limitWarn(val('wb_cat') || w.category, amt); commit();
   },
+  wishGiftSave(id) {
+    const w = D.wishlist.find(x => x.id === id), g = recvRead(); if (!g) return;
+    const gid = uid(); D.gifts.push({id: gid, dir: 'in', wishId: id, ...g, item: g.item || w.name});
+    Object.assign(w, {bought: true, gift: true, giftId: gid, boughtAt: g.date, paid: null, txId: null, source: null});
+    if ($('#wb_media').checked) D.media.push({id: uid(), added: TODAY, title: w.name, kind: val('wb_mk'), status: 'backlog', wishId: id});
+    closeModal(); toast(`❖ ${w.name} — gift from ${giftWho(g)}`); commit();
+  },
   wishUnbuy(id) {
     const w = D.wishlist.find(x => x.id === id);
+    if (w.gift) { if (!confirm(`Put "${w.name}" back on your wishlist? The received-gift entry will be removed.`)) return render(); D.gifts = D.gifts.filter(g => g.id !== w.giftId); Object.assign(w, {bought: false, gift: false, giftId: null, boughtAt: null}); return commit(); }
     if (!confirm(`Undo the purchase of "${w.name}"? The ${eur(w.paid ?? w.price)} expense will be removed.`)) return render();
     D.transactions = D.transactions.filter(t => t.id !== w.txId);
     Object.assign(w, {bought: false, boughtAt: null, paid: null, txId: null, source: null}); commit();
@@ -1865,6 +1896,13 @@ const A = {
       ${g.status === 'bought' ? `<div class="small mt">Bought ${fd(g.boughtAt)} for <b>${eur(+g.paid || 0)}</b> · <a class="acc" style="cursor:pointer" onclick="A.giftUnbuy('${id}')">undo</a></div>` : ''}
       <div class="row mt">${id ? `<button class="btn ghost danger" onclick="A.giftDel('${id}')">Delete</button>` : ''}<span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.giftSave('${id || ''}')">Save</button></div>`);
   },
+  recvGift(id) {
+    const g = id ? D.gifts.find(x => x.id === id) : {}, w = g.wishId && D.wishlist.find(x => x.id === g.wishId);
+    modal(`<h2>${id ? 'Received gift' : 'Log a gift you received'}</h2><div class="formgrid">${recvFields(g)}</div><div class="small faint mt">${w ? 'From your wishlist. ' : ''}Not an expense — your budgets stay as they are.</div>
+      <div class="row mt">${id ? `<button class="btn ghost danger" onclick="A.recvDel('${id}')">Delete</button>` : ''}<span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.recvSave('${id || ''}')">Save</button></div>`);
+  },
+  recvSave(id) { const g = recvRead(); if (!g) return; if (!g.item) return toast('What did you get?'); if (id) Object.assign(D.gifts.find(x => x.id === id), g); else D.gifts.push({id: uid(), dir: 'in', ...g}); closeModal(); commit(); toast(`❖ ${g.item} from ${giftWho(g)}`); },
+  recvDel(id) { const g = D.gifts.find(x => x.id === id), w = g.wishId && D.wishlist.find(x => x.id === g.wishId); if (!confirm(w ? `Delete this and put "${w.name}" back on your wishlist?` : 'Delete this received gift?')) return; if (w) Object.assign(w, {bought: false, gift: false, giftId: null, boughtAt: null}); A.del('gifts', id); closeModal(); },
   giftAuto() {
     const p = D.people.find(x => x.id === val('gf_p')), o = val('gf_o');
     $('#gf_whow').style.display = p ? 'none' : ''; $('#gf_tw').style.display = ['other', 'wedding', 'anniversary'].includes(o) ? '' : 'none';
