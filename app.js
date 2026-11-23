@@ -61,7 +61,7 @@ function parseDateWord(w) {
 }
 
 // ------------------------------------------------------------------ data, storage & sync
-const APP_VERSION = '2.8.0', DATA_VERSION = 2;
+const APP_VERSION = '2.9.0', DATA_VERSION = 2;
 const COLLS = ['lifeGoals', 'wishlist', 'people', 'tasks', 'paychecks', 'transactions', 'savingsMoves', 'recurring', 'goals', 'workouts', 'body', 'focus', 'media', 'assets', 'gifts', 'income'];
 let D = null, saveTimer = null, SNAP = {}, SYNC = null, NOTIFIED = {};
 const UI = {view: 'today', moneyTab: 'overview', gymTab: 'overview', recTab: 'people', calMonth: TODAY.slice(0, 7), calSel: TODAY, gymEx: null, txFilter: 'period', search: '', importPreview: null, sync: {state: 'off', msg: ''}};
@@ -608,7 +608,8 @@ function eventsOn(date) {
   for (const i of D.income) if (i.date === date) ev.push({k: 'income', g: '+', c: 'var(--good)', t: `Income: ${i.note || ''}`.replace(/: $/, ''), s: `+${eur(i.amount)} · ${incomeDest(i)}`, edit: `A.income('${i.id}')`});
   for (const g of D.gifts) if (g.date === date && isRecv(g)) ev.push({k: 'gift', g: '❖', c: 'var(--extra)', t: `Received: ${g.item || 'gift'}`, s: `from ${giftWho(g) || '?'}`});
   for (const g of D.gifts) if (g.date === date && !isRecv(g)) ev.push({k: 'gift', g: '❖', c: PAL.wants, t: `Gift: ${giftTitle(g)}`, s: g.status === 'bought' ? `bought · ${eur0(+g.paid || 0)}` : (g.budget ? eur0(+g.budget) + ' planned' : 'planned')});
-  for (const m of D.media) if (m.status === 'done' && m.finished === date) ev.push({k: 'media', g: mKind(m.kind)[2], c: 'var(--accent)', t: `Finished: ${m.title}`, s: m.rating ? '★'.repeat(m.rating) : mKind(m.kind)[1]});
+  for (const m of D.media) for (const l of m.log || []) if (l.date === date) ev.push({k: 'media', g: mKind(m.kind)[2], c: 'var(--accent)', t: `${l.rewatch ? (m.kind === 'film' || m.kind === 'series' ? 'Rewatched' : 'Reread') : mVerb(m)}: ${m.title}`, s: (l.rating ? starTxt(l.rating) + ' · ' : '') + mKind(m.kind)[1], edit: `A.media('${m.id}')`});
+  for (const m of D.media) if (m.status === 'done' && !(m.log || []).length && m.finished === date) ev.push({k: 'media', g: mKind(m.kind)[2], c: 'var(--accent)', t: `Finished: ${m.title}`, s: m.rating ? '★'.repeat(m.rating) : mKind(m.kind)[1]});
   for (const f of D.focus) if (f.date === date) { const x = ev.find(e => e.k === 'focus'); if (x) { x.min += f.min; x.s = hm(x.min); } else ev.push({k: 'focus', g: '◷', c: 'var(--muted)', t: 'Focus', s: hm(f.min), min: f.min}); }
   for (const b of D.body) if (b.date === date) ev.push({k: 'body', g: '○', c: 'var(--muted)', t: 'Body log', s: [b.weight && b.weight + ' kg', b.waist && b.waist + ' cm waist'].filter(Boolean).join(' · ')});
   return ev;
@@ -775,22 +776,123 @@ V.goals_focus = () => {
 };
 
 // ------------------------------------------------------------------ media log
+// Each title is ONE entry; every watch / read is kept in m.log = [{id, date, rating, rewatch, review}].
 const MEDIA_KINDS = [['book', 'Book', '▤'], ['comic', 'Comic / manga', '▥'], ['game', 'Game', '◈'], ['film', 'Film', '▶'], ['series', 'Series', '▷']];
 const MEDIA_ST = [['backlog', 'Want to'], ['active', 'In progress'], ['done', 'Finished'], ['dropped', 'Dropped']];
 const mKind = k => MEDIA_KINDS.find(x => x[0] === k) || MEDIA_KINDS[0];
-const stars = n => n ? '★'.repeat(n) + '<span class="faint">' + '★'.repeat(5 - n) + '</span>' : '';
+const stars = n => { n = +n || 0; if (!n) return ''; const f = Math.floor(n), h = n - f >= .5; return '★'.repeat(f) + (h ? '½' : '') + '<span class="faint">' + '★'.repeat(5 - f - (h ? 1 : 0)) + '</span>'; };
+const starTxt = n => { n = +n || 0; return n ? '★'.repeat(Math.floor(n)) + (n % 1 >= .5 ? '½' : '') : '—'; };
+const mVerb = m => ({book: 'Read', comic: 'Read', game: 'Played', film: 'Watched', series: 'Watched'})[m.kind] || 'Finished';
+const mAgain = m => ({book: 'Read again', comic: 'Read again', game: 'Played again', film: 'Watched again', series: 'Watched again'})[m.kind] || 'Again';
+const mCount = m => Math.max((m.log || []).length, +m.times || 0);
+const mLastDate = m => (m.log || []).map(l => l.date).filter(Boolean).sort().pop() || m.finished || '';
+function mSync(m) { const d = (m.log || []).map(l => l.date).filter(Boolean).sort().pop(); if (d) m.finished = d; return m; }
+const ratePick = (id, v) => `<div class="row" style="gap:10px"><input type="range" id="${id}" min="0" max="5" step="0.5" value="${+v || 0}" style="flex:1" oninput="this.nextElementSibling.textContent=starTxt(+this.value)"><span class="small" style="color:var(--gold,#d8b45a);min-width:70px">${starTxt(v)}</span></div>`;
 function mediaBody(q) {
-  const f = UI.mediaSt || 'active', kf = UI.mediaKind || '';
-  const all = D.media.filter(m => (!kf || m.kind === kf) && (!q || JSON.stringify(m).toLowerCase().includes(q)));
-  const list = all.filter(m => m.status === f).sort((a, b) => ((b.finished || b.started || b.added || '') > (a.finished || a.started || a.added || '') ? 1 : -1));
-  const yr = D.media.filter(m => m.status === 'done' && (m.finished || '').startsWith(TODAY.slice(0, 4)));
-  const row = m => { const k = mKind(m.kind); return `<div class="li" style="cursor:pointer" onclick="A.media('${m.id}')"><span class="acc" style="width:16px" title="${k[1]}">${k[2]}</span><span class="t" style="white-space:normal">${esc(m.title)}${m.creator ? ` <span class="muted small">· ${esc(m.creator)}</span>` : ''}${m.progress ? ` <span class="tag">${esc(m.progress)}</span>` : ''}</span>
-    <span class="small" style="color:var(--gold,#d8b45a)">${stars(+m.rating)}</span><span class="small muted hide-m" style="width:70px;text-align:right">${m.status === 'done' && m.finished ? fd(m.finished) : m.status === 'active' && m.started ? 'since ' + fd(m.started) : ''}</span>
+  const f = UI.mediaSt || 'active', kf = UI.mediaKind || '', yr = TODAY.slice(0, 4);
+  const all = D.media.filter(m => (!kf || m.kind === kf) && (!q || (m.title + ' ' + (m.creator || '') + ' ' + (m.year || '')).toLowerCase().includes(q)));
+  const key = m => f === 'done' ? mLastDate(m) : (m.started || m.added || '');
+  const list = all.filter(m => m.status === f).sort((a, b) => key(b) > key(a) ? 1 : key(b) < key(a) ? -1 : 0), lim = UI.mediaLimit || 60;
+  const inYr = m => (m.log || []).some(l => (l.date || '').startsWith(yr)) || (!(m.log || []).length && (m.finished || '').startsWith(yr));
+  const yrLogs = kinds => sum(D.media.filter(m => kinds.includes(m.kind)), m => (m.log || []).filter(l => (l.date || '').startsWith(yr)).length);
+  const row = m => { const k = mKind(m.kind), n = mCount(m), last = mLastDate(m); return `<div class="li" style="cursor:pointer" onclick="A.media('${m.id}')"><span class="acc" style="width:16px" title="${k[1]}">${k[2]}</span><span class="t" style="white-space:normal">${esc(m.title)}${m.year ? ` <span class="faint small">${esc(m.year)}</span>` : ''}${m.creator ? ` <span class="muted small">· ${esc(m.creator)}</span>` : ''}${m.progress ? ` <span class="tag">${esc(m.progress)}</span>` : ''}${n > 1 ? ` <span class="tag" title="${mVerb(m)} ${n} times">${n}×</span>` : ''}</span>
+    <span class="small" style="color:var(--gold,#d8b45a);white-space:nowrap">${stars(m.rating)}</span><span class="small muted hide-m" style="width:78px;text-align:right">${m.status === 'done' ? (last ? fd(last) + (last.slice(0, 4) !== yr ? ' ' + last.slice(2, 4) : '') : '') : m.status === 'active' && m.started ? 'since ' + fd(m.started) : ''}</span>
     ${m.status === 'active' ? `<button class="btn sm" onclick="event.stopPropagation();A.mediaDone('${m.id}')">Finished</button>` : m.status === 'backlog' ? `<button class="btn sm" onclick="event.stopPropagation();A.mediaStart('${m.id}')">Start</button>` : ''}</div>`; };
-  return `<div class="grid g4" style="margin-bottom:16px">${MEDIA_KINDS.slice(0, 4).map(([k, l, g]) => `<div class="card stat"><div class="lbl">${g} ${{book: 'Books', comic: 'Comics', game: 'Games', film: 'Films & series'}[k]} ${TODAY.slice(0, 4)}</div><div class="val">${yr.filter(m => m.kind === k || (k === 'film' && m.kind === 'series')).length}</div><div class="sub">finished</div></div>`).join('')}</div>
-    <div class="row wrap" style="margin-bottom:12px;gap:8px"><span class="seg">${MEDIA_ST.map(([k, l]) => `<button class="${f === k ? 'on' : ''}" onclick="UI.mediaSt='${k}';render()">${l} <span class="faint">${all.filter(m => m.status === k).length}</span></button>`).join('')}</span>
-      <select onchange="UI.mediaKind=this.value;render()"><option value="">All kinds</option>${MEDIA_KINDS.map(([k, l]) => `<option value="${k}" ${kf === k ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
-    <div class="card"><div class="list">${list.map(row).join('') || `<div class="empty">${f === 'backlog' ? 'Add books, games, films you want to get to.' : f === 'active' ? 'Nothing in progress. Start something from “Want to”.' : 'Nothing here yet.'}</div>`}</div></div>`;
+  const tiles = [['book', 'Books', ['book']], ['comic', 'Comics', ['comic']], ['game', 'Games', ['game']], ['film', 'Films & series', ['film', 'series']]];
+  return `<div class="grid g4" style="margin-bottom:16px">${tiles.map(([k, l, ks]) => { const g = mKind(k)[2], c = D.media.filter(m => ks.includes(m.kind) && m.status === 'done' && inYr(m)).length, lg = yrLogs(ks);
+      return `<div class="card stat"><div class="lbl">${g} ${l} ${yr}</div><div class="val">${c}</div><div class="sub">finished${lg > c ? ` · ${lg} ${k === 'film' ? 'watches' : 'times'}` : ''}</div></div>`; }).join('')}</div>
+    <div class="row wrap" style="margin-bottom:12px;gap:8px"><span class="seg">${MEDIA_ST.map(([k, l]) => `<button class="${f === k ? 'on' : ''}" onclick="UI.mediaSt='${k}';UI.mediaLimit=60;render()">${l} <span class="faint">${all.filter(m => m.status === k).length}</span></button>`).join('')}</span>
+      <select onchange="UI.mediaKind=this.value;UI.mediaLimit=60;render()"><option value="">All kinds</option>${MEDIA_KINDS.map(([k, l]) => `<option value="${k}" ${kf === k ? 'selected' : ''}>${l}</option>`).join('')}</select><span class="sp"></span><button class="btn sm" onclick="A.mediaImport()">⇩ Import Letterboxd / Goodreads</button></div>
+    <div class="card"><div class="list">${list.slice(0, lim).map(row).join('') || `<div class="empty">${f === 'backlog' ? 'Add books, games, films you want to get to — or import your Letterboxd watchlist / Goodreads to-read.' : f === 'active' ? 'Nothing in progress. Start something from “Want to”.' : 'Nothing here yet.'}</div>`}</div>
+      ${list.length > lim ? `<div class="row mt"><span class="small muted">Showing ${lim} of ${list.length} · use search to find one</span><span class="sp"></span><button class="btn sm" onclick="UI.mediaLimit=${lim + 100};render()">Show more</button></div>` : ''}</div>`;
+}
+
+// ---- import from Letterboxd (ZIP or its CSVs) and Goodreads (library export CSV)
+function parseCSV(text) {
+  text = text.replace(/^﻿/, ''); const rows = []; let row = [], f = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { f += '"'; i++; } else q = false; } else f += c; }
+    else if (c === '"') q = true; else if (c === ',') { row.push(f); f = ''; }
+    else if (c === '\n' || c === '\r') { if (c === '\r' && text[i + 1] === '\n') i++; row.push(f); f = ''; if (row.length > 1 || row[0] !== '') rows.push(row); row = []; }
+    else f += c;
+  }
+  if (f !== '' || row.length) { row.push(f); rows.push(row); }
+  const h = (rows.shift() || []).map(x => x.trim());
+  return rows.map(r => Object.fromEntries(h.map((k, i) => [k, (r[i] ?? '').trim()])));
+}
+async function unzip(buf) { // minimal ZIP reader (stored + deflate) — returns {path: text}
+  const v = new DataView(buf), u8 = new Uint8Array(buf), out = {}; let e = buf.byteLength - 22;
+  while (e >= 0 && v.getUint32(e, true) !== 0x06054b50) e--; if (e < 0) throw new Error('Not a ZIP file');
+  let p = v.getUint32(e + 16, true); const n = v.getUint16(e + 10, true), dec = new TextDecoder();
+  for (let i = 0; i < n; i++) {
+    const method = v.getUint16(p + 10, true), csize = v.getUint32(p + 20, true), nl = v.getUint16(p + 28, true), xl = v.getUint16(p + 30, true), cl = v.getUint16(p + 32, true), lo = v.getUint32(p + 42, true);
+    const name = dec.decode(u8.subarray(p + 46, p + 46 + nl)); p += 46 + nl + xl + cl;
+    if (!/\.csv$/i.test(name)) continue;
+    const start = lo + 30 + v.getUint16(lo + 26, true) + v.getUint16(lo + 28, true), data = u8.slice(start, start + csize);
+    out[name] = method === 0 ? dec.decode(data) : await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).text();
+  }
+  return out;
+}
+const normT = t => (t || '').toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/\s*\([^)]*#\d+[^)]*\)\s*$/, '').replace(/[^a-z0-9а-я]+/g, ' ').trim();
+const grDate = d => (d || '').replace(/\//g, '-').slice(0, 10);
+function mediaPlan(files) { // files: [{name, rows}] → {items: Map key→item, stats}
+  const items = new Map(), st = {films: 0, filmLogs: 0, watchlist: 0, books: 0, reading: 0, toread: 0, dnf: 0, bookLogs: 0, files: []};
+  const film = r => { const k = 'lb:' + normT(r.Name) + '|' + (r.Year || ''); if (!items.has(k)) items.set(k, {key: k, src: 'lb', title: r.Name, year: r.Year || '', kind: 'film', status: null, rating: 0, log: [], uri: r['Letterboxd URI']}); return items.get(k); };
+  const kindOf = (name, rows) => { const h = Object.keys(rows[0] || {}), b = (name.split('/').pop() || '').toLowerCase();
+    if (h.includes('Exclusive Shelf')) return 'goodreads'; if (!h.includes('Letterboxd URI') && !h.includes('Name')) return null;
+    if (/(^|\/)(deleted|orphaned|lists|likes)\//i.test(name)) return null;
+    if (h.includes('Review')) return 'reviews'; if (h.includes('Rewatch') || h.includes('Watched Date')) return 'diary';
+    if (b.startsWith('watchlist')) return 'watchlist'; if (b.startsWith('ratings') || (h.includes('Rating') && !b.startsWith('watched'))) return 'ratings'; if (b.startsWith('watched')) return 'watched'; return null; };
+  const typed = files.map(f => ({...f, t: kindOf(f.name, f.rows)})).filter(f => f.t);
+  const order = ['watched', 'diary', 'reviews', 'ratings', 'watchlist', 'goodreads'];
+  typed.sort((a, b) => order.indexOf(a.t) - order.indexOf(b.t));
+  for (const f of typed) {
+    st.files.push(`${f.name.split('/').pop()} (${f.rows.length})`);
+    for (const r of f.rows) {
+      if (f.t === 'watched') film(r).status = 'done';
+      else if (f.t === 'diary' || f.t === 'reviews') {
+        const it = film(r), d = r['Watched Date'] || r.Date; it.status = 'done';
+        let l = it.log.find(x => x.date === d && (!!x.rewatch === (r.Rewatch === 'Yes')));
+        if (!l) { l = {date: d, rating: +r.Rating || 0, rewatch: r.Rewatch === 'Yes'}; it.log.push(l); }
+        if (+r.Rating) l.rating = +r.Rating; if (r.Review) l.review = r.Review.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').trim(); if (r.Tags) l.tags = r.Tags;
+      }
+      else if (f.t === 'ratings') film(r).rating = +r.Rating || 0;
+      else if (f.t === 'watchlist') { const it = film(r); if (!it.status) { it.status = 'backlog'; it.added = r.Date; } }
+      else if (f.t === 'goodreads') {
+        const shelf = (r['Exclusive Shelf'] || '').toLowerCase(), k = 'gr:' + (r['Book Id'] || normT(r.Title));
+        const status = shelf === 'read' ? 'done' : shelf === 'currently-reading' ? 'active' : /dnf|did-not-finish|abandon|gave-up/.test(shelf) ? 'dropped' : 'backlog';
+        const dr = grDate(r['Date Read']), rate = +r['My Rating'] || 0, tags = (r.Bookshelves || '').split(',').map(s => s.trim()).filter(s => s && s !== shelf).join(', ');
+        items.set(k, {key: k, src: 'gr', title: r.Title, year: r['Original Publication Year'] || r['Year Published'] || '', kind: 'book', status, rating: rate, creator: r.Author,
+          log: status === 'done' && dr ? [{date: dr, rating: rate}] : [], times: status === 'done' ? Math.max(1, +r['Read Count'] || 1) : 0, added: grDate(r['Date Added']), started: status === 'active' ? grDate(r['Date Added']) : '',
+          notes: (r['My Review'] || '').replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '').trim(), pages: +r['Number of Pages'] || 0, tags});
+      }
+    }
+  }
+  for (const it of items.values()) {
+    if (it.src === 'lb') { if (!it.status) it.status = 'done'; if (!it.rating) { const l = it.log.filter(x => x.rating).sort((a, b) => a.date < b.date ? -1 : 1).pop(); if (l) it.rating = l.rating; }
+      if (it.status === 'done') { st.films++; st.filmLogs += it.log.length; } else st.watchlist++; }
+    else { st[{done: 'books', active: 'reading', backlog: 'toread', dropped: 'dnf'}[it.status]]++; st.bookLogs += it.log.length; }
+  }
+  return {items, st};
+}
+let IMPORT_PLAN = null;
+function mediaFind(it) {
+  return D.media.find(m => m.src === it.key) || D.media.find(m => !m.src && m.kind === it.kind && normT(m.title) === normT(it.title) && (!m.year || !it.year || String(m.year) === String(it.year)));
+}
+function mediaApply(plan) {
+  let added = 0, updated = 0, logs = 0; const rank = {backlog: 0, dropped: 1, active: 2, done: 3};
+  for (const it of plan.items.values()) {
+    let m = mediaFind(it);
+    if (!m) { m = {id: uid(), added: it.added || TODAY, title: it.title, kind: it.kind, status: it.status, log: []}; D.media.push(m); added++; } else updated++;
+    m.src = it.key; m.year = it.year || m.year || ''; if (it.creator) m.creator = it.creator; if (it.pages) m.pages = it.pages; if (it.tags) m.tags = it.tags;
+    if ((rank[it.status] ?? 0) >= (rank[m.status] ?? 0) || it.src === 'gr') m.status = it.status;
+    if (it.rating) m.rating = it.rating; if (it.notes && !m.notes) m.notes = it.notes; if (it.started && !m.started) m.started = it.started; if (it.times) m.times = Math.max(+m.times || 0, it.times);
+    m.log ||= []; if (!m.log.length && m.finished && m.status === 'done' && !m.src0) m.log.push({id: uid(), date: m.finished, rating: m.rating || 0}); m.src0 = 1;
+    for (const l of it.log) if (!m.log.some(x => x.date === l.date && !!x.rewatch === !!l.rewatch)) { m.log.push({id: uid(), ...l}); logs++; } else { const x = m.log.find(x => x.date === l.date && !!x.rewatch === !!l.rewatch); if (l.rating) x.rating = l.rating; if (l.review) x.review = l.review; }
+    m.log.sort((a, b) => a.date < b.date ? -1 : 1); mSync(m);
+  }
+  return {added, updated, logs};
 }
 
 // ------------------------------------------------------------------ net worth & investments
@@ -1299,7 +1401,7 @@ function monthStats(ym) {
   const wt = bodyM('weight'), wa = bodyM('waist');
   const goalsDone = D.lifeGoals.filter(g => inM(g.doneAt)), checkins = sum(D.lifeGoals, g => (g.log || []).filter(l => inM(l.date)).length);
   const tasksDone = D.tasks.filter(t => inM(t.doneAt)).length + sum(D.tasks, t => (t.history || []).filter(inM).length);
-  const media = D.media.filter(m => m.status === 'done' && inM(m.finished)), focusM = sum(D.focus.filter(f => inM(f.date)), f => f.min);
+  const media = D.media.filter(m => (m.log || []).some(l => inM(l.date)) || (!(m.log || []).length && m.status === 'done' && inM(m.finished))), focusM = sum(D.focus.filter(f => inM(f.date)), f => f.min);
   return {ym, media, focusM, spent, byB, cats, income, saved, fromSavings, bills, bought, ws, vol: sum(ws, wVol), nsets: sum(ws, wSets), sets, prs, wt, wa, goalsDone, checkins, tasksDone};
 }
 function delta(cur, prev, fmt, lowerIsGood) {
@@ -1383,7 +1485,7 @@ V.calendar = () => {
           <div class="row"><span class="n">${pd(d).getDate()}</span><span class="sp"></span>${ev.some(e => e.k === 'gym') ? '<span style="color:var(--accent)">◆</span>' : ''}</div>
           ${items.filter(e => !['gym', 'focus'].includes(e.k)).slice(0, 3).map(e => `<div class="mk"><span style="color:${e.c}">${e.g}</span><span>${esc(e.t)}</span></div>`).join('')}
           ${spend ? `<div class="mk muted"><span>−${eur(spend).replace('−', '')}</span></div>` : ''}${inc.length ? `<div class="mk good"><span>+${eur(sum(D.paychecks.filter(p => p.date === d), p => p.amount), 0)}</span></div>` : ''}</div>`; }).join('')}</div>
-      <div class="mt"><div class="legend">${[ ['var(--accent)', '◆', 'workout'], ['var(--muted)', '◇', 'planned'], ['var(--bad)', '⚑', 'holiday'], ['var(--extra)', '✧', 'name day'], [PAL.wants, '❖', 'gift'], ['var(--warn)', '▲', 'bill due'], ['var(--muted)', '✓', 'bill paid'], ['var(--extra)', '✦', 'birthday'], ['var(--text)', '□', 'task'], ['var(--wants)', '◎', 'goal deadline'], ['var(--good)', '★', 'goal achieved'], ['var(--good)', '+€', 'income'], ['var(--muted)', '−€', 'spent'], ['var(--savings)', '↗', 'to savings']].map(([c, g, l]) => `<span><b style="color:${c};font-weight:400">${g}</b>${l}</span>`).join('')}</div></div></div>
+      <div class="mt"><div class="legend">${[ ['var(--accent)', '◆', 'workout'], ['var(--muted)', '◇', 'planned'], ['var(--bad)', '⚑', 'holiday'], ['var(--extra)', '✧', 'name day'], [PAL.wants, '❖', 'gift'], ['var(--accent)', '▶', 'watched / read'], ['var(--warn)', '▲', 'bill due'], ['var(--muted)', '✓', 'bill paid'], ['var(--extra)', '✦', 'birthday'], ['var(--text)', '□', 'task'], ['var(--wants)', '◎', 'goal deadline'], ['var(--good)', '★', 'goal achieved'], ['var(--good)', '+€', 'income'], ['var(--muted)', '−€', 'spent'], ['var(--savings)', '↗', 'to savings']].map(([c, g, l]) => `<span><b style="color:${c};font-weight:400">${g}</b>${l}</span>`).join('')}</div></div></div>
     <div class="card" style="position:sticky;top:0"><h3>${fdl(UI.calSel)} ${UI.calSel.slice(0, 4)}</h3>
       ${feastsOn(UI.calSel).length ? `<div class="small muted" style="margin:-4px 0 8px;line-height:1.6"><span style="color:var(--extra)">✧</span> ${feastsOn(UI.calSel).map(f => `<b style="font-weight:500;color:var(--text)">${esc(f.feast)}</b> — ${esc(f.names.join(', '))}`).join('<br>')}</div>` : ''}
       ${sel.length ? sel.map(e => `<div class="li" style="align-items:flex-start${e.edit ? ';cursor:pointer' : ''}" ${e.edit ? `onclick="${e.edit}" title="Tap to edit"` : ''}><span style="color:${e.c};width:14px">${e.g}</span><div style="flex:1;min-width:0"><div>${esc(e.t)}</div>${e.s ? `<div class="small muted">${esc(e.s)}</div>` : ''}</div>${e.edit ? '<span class="faint small">✎</span>' : ''}</div>`).join('') : '<div class="empty">Nothing on this day</div>'}
@@ -1476,6 +1578,10 @@ const HELP = [
   ['Calendar, records & reminders', `<p>The <b>Calendar</b> shows everything per day: ◆ workouts, − spending, + income, ▲ bills due, ✓ bills paid, ✦ birthdays, ✧ name days, ⚑ holidays, ◇ planned workouts, □ tasks, ◎ goal deadlines, ★ goals achieved, finished books/games/films. Tap a day for the details.</p>
     <p>Tap any task — in Records, in Today's Upcoming or on a calendar day — to edit it.</p><p><b>Records</b> holds people (birthday, name day, keep in touch, gift ideas), tasks & notes, and the media log.</p>
     <p><b>Reminders</b>: birthdays and bills at least 7 days ahead (change in Settings), the day before and on the day; a weekly summary every Monday. Turn on notifications in Settings. On Android and desktop they also arrive while the app is closed (checked a few times a day); on iPhone they show when you open the app.</p>`],
+  ['Media log & import', `<p><b>Records → Media log</b> keeps books, comics, games, films and series: <i>Want to</i>, <i>In progress</i>, <i>Finished</i>, <i>Dropped</i>. Ratings go in half stars (★★★½).</p>
+    <ul><li>Each title is listed <b>once</b>. Every watch / read is kept inside it — open it to see all of them with dates, ratings and reviews, and press <b>+ Watched again</b> / <b>+ Read again</b> to log another one. The list shows <span class="tag">10×</span> when you've seen something 10 times.</li>
+    <li><b>Import</b> (button at the top of the Media log):<br>Letterboxd → letterboxd.com → Settings → Data → <b>Export your data</b> → pick the ZIP as it is.<br>Goodreads → My Books → Import and export → <b>Export Library</b> → pick the CSV.<br>You see what will be added first. Films with diary dates and books with a read date appear on the calendar. Watchlist and to-read go to <i>Want to</i>; currently-reading to <i>In progress</i>; a DNF shelf to <i>Dropped</i>.</li>
+    <li>Import again any time — only new things are added and ratings are updated, never duplicated. Goodreads only exports the last date for books you've read several times, so earlier rereads show as “without a date”.</li></ul>`],
   ['Extra income', `<p>Money that comes in outside your paycheck — a side job, a money gift, a refund, something you sold: <b>Money → + Income</b> (next to + Paycheck).</p>
     <ul><li>Type the amount and a short description, then choose where it goes: <b>This month's pool</b> or <b>Straight to savings</b>.</li>
     <li>For the pool, choose <b>Wants</b>, <b>Needs</b> or <b>Split</b> like your salary. It's added to the pay period of that date, so <i>safe to spend</i> and <i>Wants left</i> go up right away. With Split, the savings share goes to savings.</li>
@@ -1606,6 +1712,7 @@ async function tourEnd() {
 
 // ---------------- what's new (shown once on each device after an update)
 const CHANGELOG = [
+  {v: '2.9.0', items: ['Import your Letterboxd and Goodreads history, watchlist and to-read (Records → Media log → Import)', 'Each title once, with every rewatch / reread inside it — open it to see them all, “+ Watched again” to add one', 'Half-star ratings', 'Past watches and reads fill the calendar']},
   {v: '2.8.0', items: ['+ Income: log money from other sources — into this month\'s Wants / Needs / split, or straight to savings', 'Income shows in Transactions and the calendar, never as spending', 'Tasks can be edited from anywhere: tap one in Records, Today or the calendar']},
   {v: '2.7.0', items: ['Wishlist: tick an item as “Received as a gift” — no expense, budgets untouched', 'Records → Gifts: a Received list and “+ Received gift” for gifts that weren\'t on the wishlist', 'People cards show what each person gave you']},
   {v: '2.6.1', items: ['Correct your savings balance by hand: Money → Savings & goals → ✎ Correct', 'Corrections show in Transactions as “Manual correction” and never touch Needs, Wants or the savings budget']},
@@ -1989,24 +2096,67 @@ const A = {
   talked(id) { const p = D.people.find(x => x.id === id); p.lastContact = TODAY; commit(); toast(`Noted — next nudge in ${p.keepEvery} week${p.keepEvery > 1 ? 's' : ''}`); },
   // ---- media
   media(id, preset) {
-    const m = id ? D.media.find(x => x.id === id) : {kind: 'book', status: 'backlog', ...(preset || {})};
-    modal(`<h2>${id ? 'Edit' : 'Add to'} media log</h2><div class="formgrid"><label class="f full">Title<input id="md_t" value="${esc(m.title || '')}" placeholder="Dune, Elden Ring, Breaking Bad…"></label>
+    const m = id ? D.media.find(x => x.id === id) : {kind: 'book', status: 'backlog', ...(preset || {})}, lg = (m.log || []).slice().sort((a, b) => a.date < b.date ? 1 : -1), n = mCount(m);
+    const hist = id && (lg.length || n) ? `<div class="qk mt" style="margin-top:16px">${mVerb(m)} ${n}× ${n > lg.length ? `<span class="faint" style="text-transform:none;letter-spacing:0">(${n - lg.length} without a date)</span>` : ''}</div>
+      <div class="list" style="max-height:260px;overflow:auto">${lg.map(l => `<div class="li small" style="align-items:flex-start"><span class="muted" style="width:92px">${l.date ? fd(l.date) + ' ' + l.date.slice(0, 4) : 'no date'}</span><span class="t" style="white-space:normal">${l.rewatch ? '<span class="tag">re' + (m.kind === 'film' || m.kind === 'series' ? 'watch' : 'read') + '</span> ' : ''}<span style="color:var(--gold,#d8b45a)">${l.rating ? starTxt(l.rating) : ''}</span>${l.review ? `<div class="faint" style="margin-top:3px;white-space:pre-line">${esc(l.review.length > 280 ? l.review.slice(0, 280) + '…' : l.review)}</div>` : ''}</span><button class="btn sm ghost danger" title="Remove this ${mVerb(m).toLowerCase()} entry" onclick="A.mediaLogDel('${m.id}','${l.id}')">×</button></div>`).join('')}</div>` : '';
+    const histFirst = id && hist, k = mKind(m.kind);
+    const head = histFirst ? `<div class="small muted" style="margin:-4px 0 8px">${k[2]} ${k[1]}${m.year ? ' · ' + esc(m.year) : ''}${m.creator ? ' · ' + esc(m.creator) : ''}${m.rating ? ` · <span style="color:var(--gold,#d8b45a)">${starTxt(m.rating)}</span>` : ''}</div>${hist.replace('class="qk mt" style="margin-top:16px"', 'class="qk"')}
+      ${m.status === 'done' ? `<div class="row mt"><button class="btn sm pri" onclick="A.mediaAgain('${id}')">+ ${mAgain(m)}</button></div>` : ''}${m.notes ? `<div class="small muted mt" style="white-space:pre-line">${esc(m.notes.length > 400 ? m.notes.slice(0, 400) + '…' : m.notes)}</div>` : ''}
+      <details class="mt"><summary class="small acc" style="cursor:pointer;padding:6px 0">Edit details</summary>` : '';
+    modal(`<h2>${id ? esc(m.title) : 'Add to media log'}</h2>${head}<div class="formgrid"><label class="f full">Title<input id="md_t" value="${esc(m.title || '')}" placeholder="Dune, Elden Ring, Breaking Bad…"></label>
       <label class="f">Kind<select id="md_k">${MEDIA_KINDS.map(([k, l]) => `<option value="${k}" ${m.kind === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
       <label class="f">Status<select id="md_s">${MEDIA_ST.map(([k, l]) => `<option value="${k}" ${m.status === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
-      <label class="f">Author / studio (optional)<input id="md_c" value="${esc(m.creator || '')}"></label><label class="f">Progress (optional)<input id="md_p" value="${esc(m.progress || '')}" placeholder="p. 120, S2E4, 40%…"></label>
-      <label class="f">Started<input type="date" id="md_sd" value="${m.started || ''}"></label><label class="f">Finished<input type="date" id="md_fd" value="${m.finished || ''}"></label>
-      <div class="full"><div class="small muted" style="margin-bottom:4px">RATING</div><span class="seg" id="md_r">${[0, 1, 2, 3, 4, 5].map(n => `<button class="${(+m.rating || 0) === n ? 'on' : ''}" onclick="this.parentNode.querySelectorAll('button').forEach(b=>b.classList.remove('on'));this.classList.add('on')" data-n="${n}">${n ? '★'.repeat(n) : '—'}</button>`).join('')}</span></div>
-      <label class="f full">Notes<input id="md_n" value="${esc(m.notes || '')}" placeholder="thoughts, who recommended it…"></label></div>
-      <div class="row mt">${id ? `<button class="btn ghost danger" onclick="A.del('media','${id}');closeModal()">Delete</button>` : ''}<span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.mediaSave('${id || ''}')">Save</button></div>`);
+      <label class="f">Author / studio (optional)<input id="md_c" value="${esc(m.creator || '')}"></label><label class="f">Year (optional)<input id="md_y" inputmode="numeric" value="${esc(m.year || '')}"></label>
+      <label class="f">Progress (optional)<input id="md_p" value="${esc(m.progress || '')}" placeholder="p. 120, S2E4, 40%…"></label><label class="f">Started<input type="date" id="md_sd" value="${m.started || ''}"></label>
+      ${!lg.length ? `<label class="f">Finished<input type="date" id="md_fd" value="${m.finished || ''}"></label>` : ''}
+      <div class="full"><div class="small muted" style="margin-bottom:4px">RATING</div>${ratePick('md_r', m.rating)}</div>
+      <label class="f full">Notes<input id="md_n" value="${esc(m.notes || '')}" placeholder="thoughts, who recommended it…"></label></div>${histFirst ? '</details>' : ''}
+      <div class="row mt">${id ? `<button class="btn ghost danger" onclick="if(confirm('Delete ${esc(m.title).replace(/'/g, '')} and its history?')){A.del('media','${id}');closeModal()}">Delete</button>` : ''}<span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.mediaSave('${id || ''}')">Save</button></div>`);
   },
   mediaSave(id) {
-    const st = val('md_s'), m = {title: val('md_t'), kind: val('md_k'), status: st, creator: val('md_c'), progress: val('md_p'), started: val('md_sd') || (st === 'active' || st === 'done' ? TODAY : ''), finished: val('md_fd') || (st === 'done' ? TODAY : ''), rating: +($('#md_r button.on') || {dataset: {n: 0}}).dataset.n, notes: val('md_n')};
+    const st = val('md_s'), fdv = $('#md_fd') ? val('md_fd') : '', m = {title: val('md_t'), kind: val('md_k'), status: st, creator: val('md_c'), year: val('md_y'), progress: val('md_p'), started: val('md_sd') || (st === 'active' || st === 'done' ? TODAY : ''), rating: +val('md_r') || 0, notes: val('md_n')};
     if (!m.title) return toast('Give it a title');
-    if (id) Object.assign(D.media.find(x => x.id === id), m); else D.media.push({id: uid(), added: TODAY, ...m});
-    UI.mediaSt = st; closeModal(); commit();
+    const prev = id ? D.media.find(q => q.id === id).status : null;
+    let x = id ? Object.assign(D.media.find(q => q.id === id), m) : (D.media.push({id: uid(), added: TODAY, log: [], ...m}), D.media[D.media.length - 1]);
+    x.log ||= []; if (st === 'done' && !x.log.length && (fdv || prev !== 'done')) x.log.push({id: uid(), date: fdv || TODAY, rating: m.rating}); else if (fdv) x.finished = fdv;
+    mSync(x); UI.mediaSt = st; closeModal(); commit();
   },
   mediaStart(id) { Object.assign(D.media.find(x => x.id === id), {status: 'active', started: TODAY}); UI.mediaSt = 'active'; commit(); },
-  mediaDone(id) { const m = D.media.find(x => x.id === id); Object.assign(m, {status: 'done', finished: TODAY}); commit(); A.media(id); toast('Finished — rate it?'); },
+  mediaDone(id) { const m = D.media.find(x => x.id === id); m.log ||= []; m.log.push({id: uid(), date: TODAY, rewatch: m.log.length > 0}); Object.assign(m, {status: 'done', progress: ''}); mSync(m); commit(); A.media(id); toast('Finished — rate it?'); },
+  mediaAgain(id) {
+    const m = D.media.find(x => x.id === id);
+    modal(`<h2>${mAgain(m)}: ${esc(m.title)}</h2><div class="formgrid"><label class="f">Date<input type="date" id="ma_d" value="${TODAY}"></label><div class="f"><div class="small muted" style="margin-bottom:4px">RATING THIS TIME</div>${ratePick('ma_r', m.rating)}</div>
+      <label class="f full">Thoughts (optional)<input id="ma_n"></label></div><div class="row mt"><span class="sp"></span><button class="btn ghost" onclick="A.media('${id}')">Back</button><button class="btn pri" onclick="A.mediaAgainSave('${id}')">Save</button></div>`);
+  },
+  mediaAgainSave(id) { const m = D.media.find(x => x.id === id); m.log ||= []; m.log.push({id: uid(), date: val('ma_d') || TODAY, rating: +val('ma_r') || 0, rewatch: true, review: val('ma_n')}); m.log.sort((a, b) => a.date < b.date ? -1 : 1); if (+val('ma_r')) m.rating = +val('ma_r'); mSync(m); commit(); A.media(id); toast(`${mVerb(m)} ${mCount(m)}×`); },
+  mediaLogDel(id, lid) { const m = D.media.find(x => x.id === id); m.log = (m.log || []).filter(l => l.id !== lid); if (m.times) m.times = Math.max(0, m.times - 1); mSync(m); commit(); A.media(id); },
+  mediaImport() {
+    IMPORT_PLAN = null;
+    modal(`<h2>Import Letterboxd / Goodreads</h2><div class="small muted" style="line-height:1.8">
+      <b>Letterboxd</b>: on letterboxd.com → Settings → <b>Data</b> → <b>Export your data</b>. Pick the ZIP here as it is.<br>
+      <b>Goodreads</b>: goodreads.com → My Books → <b>Import and export</b> → <b>Export Library</b>. Pick the CSV here.<br>You can pick both at once. Nothing is saved until you press Import; importing again only adds what's new.</div>
+      <label class="btn pri mt" style="display:inline-block">Choose files…<input type="file" accept=".zip,.csv,text/csv,application/zip" multiple hidden onchange="A.mediaImportRead(this.files)"></label>
+      <div id="mi_pv" class="mt"></div><div class="row mt"><span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" id="mi_go" disabled onclick="A.mediaImportGo()">Import</button></div>`);
+  },
+  async mediaImportRead(fl) {
+    const pv = $('#mi_pv'); pv.innerHTML = '<span class="small muted">Reading…</span>';
+    try {
+      const files = [];
+      for (const f of fl) {
+        if (/\.zip$/i.test(f.name) || f.type.includes('zip')) { const z = await unzip(await f.arrayBuffer()); for (const [name, text] of Object.entries(z)) files.push({name, rows: parseCSV(text)}); }
+        else files.push({name: f.name, rows: parseCSV(await f.text())});
+      }
+      const plan = mediaPlan(files), s = plan.st; IMPORT_PLAN = plan;
+      if (!plan.items.size) { pv.innerHTML = '<span class="bad small">No Letterboxd or Goodreads data found in these files.</span>'; return; }
+      let nNew = 0; for (const it of plan.items.values()) if (!mediaFind(it)) nNew++;
+      pv.innerHTML = `<div class="card" style="padding:12px"><div class="list small">
+        ${s.films || s.watchlist ? `<div class="li"><span class="t">▶ Films watched</span><b>${s.films}</b></div><div class="li"><span class="t muted">diary entries (watch dates, incl. rewatches)</span><span>${s.filmLogs}</span></div><div class="li"><span class="t">Watchlist → Want to</span><b>${s.watchlist}</b></div>` : ''}
+        ${s.books || s.reading || s.toread ? `<div class="li"><span class="t">▤ Books read</span><b>${s.books}</b></div><div class="li"><span class="t">Currently reading → In progress</span><b>${s.reading}</b></div><div class="li"><span class="t">To-read → Want to</span><b>${s.toread}</b></div>${s.dnf ? `<div class="li"><span class="t">Did not finish → Dropped</span><b>${s.dnf}</b></div>` : ''}` : ''}</div>
+        <div class="small muted mt">${nNew} new · ${plan.items.size - nNew} already in your log (will be updated, no duplicates)</div><div class="small faint" style="margin-top:4px">From: ${esc(s.files.join(', '))}</div></div>`;
+      $('#mi_go').disabled = false;
+    } catch (e) { pv.innerHTML = `<span class="bad small">Couldn't read that file: ${esc(e.message)}</span>`; }
+  },
+  mediaImportGo() { if (!IMPORT_PLAN) return; const r = mediaApply(IMPORT_PLAN); IMPORT_PLAN = null; closeModal(); UI.mediaSt = 'done'; commit(); toast(`Imported: ${r.added} new, ${r.updated} updated, ${r.logs} watch / read dates`); },
   // ---- net worth
   asset(id) {
     const a = id ? D.assets.find(x => x.id === id) : {kind: 'bank', values: []}, hist = (a.values || []).slice().sort((x, y) => x.date < y.date ? 1 : -1);
