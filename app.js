@@ -61,8 +61,8 @@ function parseDateWord(w) {
 }
 
 // ------------------------------------------------------------------ data, storage & sync
-const APP_VERSION = '2.7.0', DATA_VERSION = 2;
-const COLLS = ['lifeGoals', 'wishlist', 'people', 'tasks', 'paychecks', 'transactions', 'savingsMoves', 'recurring', 'goals', 'workouts', 'body', 'focus', 'media', 'assets', 'gifts'];
+const APP_VERSION = '2.8.0', DATA_VERSION = 2;
+const COLLS = ['lifeGoals', 'wishlist', 'people', 'tasks', 'paychecks', 'transactions', 'savingsMoves', 'recurring', 'goals', 'workouts', 'body', 'focus', 'media', 'assets', 'gifts', 'income'];
 let D = null, saveTimer = null, SNAP = {}, SYNC = null, NOTIFIED = {};
 const UI = {view: 'today', moneyTab: 'overview', gymTab: 'overview', recTab: 'people', calMonth: TODAY.slice(0, 7), calSel: TODAY, gymEx: null, txFilter: 'period', search: '', importPreview: null, sync: {state: 'off', msg: ''}};
 
@@ -85,7 +85,7 @@ const store = {
 function defaults() {
   return {version: DATA_VERSION, settings: {split: {needs: 50, wants: 30, savings: 20}, reminderDays: 7, startingSavings: 0, gymGoal: {weightMin: 0, weightMax: 0}, onboarded: false, limits: {}, bgCalendar: true, training: {days: {}, remind: true}, focusLabels: [],
     categories: [['Bills', 'needs'], ['Subscriptions', 'needs'], ['Food', 'needs'], ['Transport', 'needs'], ['Health', 'needs'], ['Eating out', 'wants'], ['Entertainment', 'wants'], ['Hobbies', 'wants'], ['Gifts', 'wants'], ['Shopping', 'wants'], ['Investing', 'savings'], ['Other', 'wants']].map(([name, bucket]) => ({name, bucket}))},
-    lifeGoals: [], wishlist: [], people: [], tasks: [], paychecks: [], transactions: [], savingsMoves: [], recurring: [], goals: [], workouts: [], body: [], focus: [], media: [], assets: [], gifts: [], meta: {tomb: {}, settingsU: {}}};
+    lifeGoals: [], wishlist: [], people: [], tasks: [], paychecks: [], transactions: [], savingsMoves: [], recurring: [], goals: [], workouts: [], body: [], focus: [], media: [], assets: [], gifts: [], income: [], meta: {tomb: {}, settingsU: {}}};
 }
 // Upgrades older saved data so updates never lose anything. Add a step here whenever the format changes.
 function migrate(d) {
@@ -330,6 +330,14 @@ document.addEventListener('keydown', e => { if (!LOCKED || e.target.tagName === 
 
 // ------------------------------------------------------------------ money engine
 const catBucket = name => (D.settings.categories.find(c => c.name === name) || {}).bucket || 'wants';
+// ---- extra income (gifts of money, side jobs, refunds…): into this month's pool or straight to savings
+function incomeParts(i, pc) {
+  if (i.dest === 'savings') return {needs: 0, wants: 0, savings: i.amount};
+  if (i.to === 'needs') return {needs: i.amount, wants: 0, savings: 0};
+  if (i.to === 'split') { const sp = (pc || {}).split || D.settings.split; return {needs: r2(i.amount * sp.needs / 100), wants: r2(i.amount * sp.wants / 100), savings: r2(i.amount * sp.savings / 100)}; }
+  return {needs: 0, wants: i.amount, savings: 0};
+}
+const incomeDest = i => i.dest === 'savings' ? 'straight to savings' : i.to === 'needs' ? 'this month · Needs' : i.to === 'split' ? 'this month · split like salary' : 'this month · Wants';
 function currentPeriod(at = TODAY) {
   const pcs = D.paychecks.filter(p => p.date <= at).sort((a, b) => a.date < b.date ? -1 : 1);
   const pc = pcs[pcs.length - 1];
@@ -343,7 +351,10 @@ function periodOf(pc, at = TODAY) {
   // leftover already moved to savings leaves the spendable budget (wants first, then needs)
   const moved = pc.leftoverMoved || 0, mw = Math.min(moved, raw.wants);
   const b = {needs: raw.needs - (moved - mw), wants: raw.wants - mw, savings: raw.savings};
-  return {pc, start: pc.date, end, nextPay, estimated: !next, budget: b, raw, over: at > end};
+  // extra income put into "this month's pool" adds to Needs / Wants of the pay period it falls in
+  const ex = D.income.filter(i => i.dest === 'pool' && i.date >= pc.date && i.date <= end), extra = {needs: sum(ex, i => incomeParts(i, pc).needs), wants: sum(ex, i => incomeParts(i, pc).wants)};
+  b.needs += extra.needs; b.wants += extra.wants; raw.needs += extra.needs; raw.wants += extra.wants;
+  return {pc, extra: extra.needs + extra.wants, start: pc.date, end, nextPay, estimated: !next, budget: b, raw, over: at > end};
 }
 // Ended pay periods whose leftover you haven't reviewed yet. Nothing is ever moved automatically.
 function periodsToReview() {
@@ -590,10 +601,11 @@ function eventsOn(date) {
   for (const p of D.people) { const nb = nextBirthday(p.birthday); const md = (p.birthday || '').slice(-5);
     if (md && date.slice(5) === md) { const by = birthYear(p.birthday); ev.push({k: 'bday', g: '✦', c: 'var(--extra)', t: `${p.name}'s birthday`, s: by ? `turns ${+date.slice(0, 4) - by}` : ''}); } }
   for (const g of D.lifeGoals) { if (g.targetDate === date && g.status !== 'done') ev.push({k: 'goal', g: '◎', c: 'var(--wants)', t: `Goal deadline: ${g.title}`, s: `${Math.round(goalProgress(g) * 100)}% done`}); if (g.doneAt === date) ev.push({k: 'goal', g: '★', c: 'var(--good)', t: `Achieved: ${g.title}`, s: ''}); }
-  for (const t of D.tasks) if (t.due === date) ev.push({k: 'task', g: t.done ? '☑' : '□', c: t.done ? 'var(--muted)' : 'var(--text)', t: t.title, s: t.done ? 'done' : ''});
+  for (const t of D.tasks) if (t.due === date) ev.push({k: 'task', g: t.done ? '☑' : '□', c: t.done ? 'var(--muted)' : 'var(--text)', t: t.title, s: t.done ? 'done' : (t.notes || ''), edit: `A.task('${t.id}')`});
   const hol = holidayOn(date); if (hol) ev.unshift({k: 'holiday', g: '⚑', c: 'var(--bad)', t: hol, s: 'Public holiday in Bulgaria'});
   if (bgOn()) for (const p of D.people) { const n = nameDayOf(p, +date.slice(0, 4)); if (n && n.date === date) ev.push({k: 'nameday', g: '✧', c: 'var(--extra)', t: `${p.name}'s name day`, s: n.feast}); }
   if (date >= TODAY && !trainedOn(date) && planOn(date)) ev.push({k: 'plan', g: '◇', c: 'var(--muted)', t: `Plan: ${planOn(date)}`, s: 'planned workout'});
+  for (const i of D.income) if (i.date === date) ev.push({k: 'income', g: '+', c: 'var(--good)', t: `Income: ${i.note || ''}`.replace(/: $/, ''), s: `+${eur(i.amount)} · ${incomeDest(i)}`, edit: `A.income('${i.id}')`});
   for (const g of D.gifts) if (g.date === date && isRecv(g)) ev.push({k: 'gift', g: '❖', c: 'var(--extra)', t: `Received: ${g.item || 'gift'}`, s: `from ${giftWho(g) || '?'}`});
   for (const g of D.gifts) if (g.date === date && !isRecv(g)) ev.push({k: 'gift', g: '❖', c: PAL.wants, t: `Gift: ${giftTitle(g)}`, s: g.status === 'bought' ? `bought · ${eur0(+g.paid || 0)}` : (g.budget ? eur0(+g.budget) + ' planned' : 'planned')});
   for (const m of D.media) if (m.status === 'done' && m.finished === date) ev.push({k: 'media', g: mKind(m.kind)[2], c: 'var(--accent)', t: `Finished: ${m.title}`, s: m.rating ? '★'.repeat(m.rating) : mKind(m.kind)[1]});
@@ -878,11 +890,11 @@ V.today = () => {
     : `<div class="card"><h3>Goals</h3><div class="small muted">Set a goal and get reminded to check in. <a class="acc" style="cursor:pointer" onclick="go('goals');A.goal2()">Add a goal →</a></div></div>`;
   const upcoming = `<div class="card"><h3>Upcoming · next 14 days <span class="act faint">reminders ${lead}d ahead</span></h3><div class="list">${up.length ? up.map(u => {
     const dd = diff(TODAY, u.d), when = dd < 0 ? `${-dd}d ago` : dd === 0 ? 'today' : dd === 1 ? 'tomorrow' : `in ${dd}d`;
-    return `<div class="li"><span style="color:${u.c};width:14px">${u.g}</span><span class="t">${esc(u.t)} <span class="muted small">${esc(u.s)}</span></span>
+    return `<div class="li"><span style="color:${u.c};width:14px">${u.g}</span><span class="t" ${u.task ? `style="cursor:pointer" onclick="A.task('${u.task.id}')" title="Tap to edit"` : ''}>${esc(u.t)} <span class="muted small">${esc(u.s)}</span></span>
       ${u.bill ? `<button class="btn sm" onclick="A.payBill('${u.bill.r.id}','${u.bill.ym}')">Mark paid</button>` : ''}${u.task ? `<button class="btn sm" onclick="A.toggleTask('${u.task.id}')">Done</button>` : ''}${u.touch ? `<button class="btn sm" onclick="A.talked('${u.touch.id}')">Talked</button>` : ''}${u.gift ? `<button class="btn sm" onclick="A.giftBuy('${u.gift.id}')">Bought</button>` : ''}
       <span class="small ${dd <= lead && dd >= 0 ? 'acc' : 'muted'}" style="width:74px;text-align:right">${when}</span></div>`; }).join('') : '<div class="empty">Nothing coming up</div>'}</div></div>`;
   // side: bucket bars + body
-  const buckets = p ? `<div class="card"><h3>This pay period <span class="act faint small">${fd(p.start)} – ${fd(p.end)}</span></h3>${hbars(['needs', 'wants', 'savings'].map(k => ({label: k[0].toUpperCase() + k.slice(1), value: k === 'savings' ? p.budget.savings : st.spent[k], max: p.budget[k], color: PAL[k],
+  const buckets = p ? `<div class="card"><h3>This pay period <span class="act faint small">${fd(p.start)} – ${fd(p.end)}${p.extra ? ` · <span class="good">+${eur0(p.extra)} extra income</span>` : ''}</span></h3>${hbars(['needs', 'wants', 'savings'].map(k => ({label: k[0].toUpperCase() + k.slice(1), value: k === 'savings' ? p.budget.savings : st.spent[k], max: p.budget[k], color: PAL[k],
       right: k === 'savings' ? `${eur(p.budget.savings)} saved` : `${eur(st.spent[k])} / ${eur(p.budget[k])}`, tip: k === 'savings' ? 'Moved to savings on payday' : `${k}: ${eur(st.spent[k])} spent, ${eur(p.budget[k] - st.spent[k])} left`})))}</div>` : '';
   const bw = D.body.filter(b => b.weight).map(b => ({x: b.date, y: +b.weight})).filter(p => p.x >= addDays(TODAY, -90));
   const body = `<div class="card"><h3>Weight · 90 days <span class="act"><button class="btn sm" onclick="A.bodyLog()">+ Log</button></span></h3>${bw.length ? lineChart([{points: bw, color: 'var(--accent)'}], {h: 190, W: 440, fmt: v => v.toFixed(1), band: goalBand(), unit: ' kg'}) : '<div class="empty">Log your weight to see the trend</div>'}</div>`;
@@ -901,7 +913,7 @@ V.today = () => {
 V.money = () => {
   const tabs = [['overview', 'Overview'], ['tx', 'Transactions'], ['bills', 'Bills & subscriptions'], ['wish', 'Wishlist'], ['savings', 'Savings & goals'], ['networth', 'Net worth']];
   return `<div class="row"><div class="tabs" style="flex:1">${tabs.map(([k, l]) => `<a class="${UI.moneyTab === k ? 'on' : ''}" onclick="UI.moneyTab='${k}';render()">${l}</a>`).join('')}</div>
-    <div class="row" style="margin-bottom:18px"><button class="btn" onclick="A.paycheck()">+ Paycheck</button><button class="btn pri" onclick="A.expense()">+ Expense</button></div></div>` + V['money_' + UI.moneyTab]();
+    <div class="row" style="margin-bottom:18px"><button class="btn" onclick="A.paycheck()">+ Paycheck</button><button class="btn" onclick="A.income()">+ Income</button><button class="btn pri" onclick="A.expense()">+ Expense</button></div></div>` + V['money_' + UI.moneyTab]();
 };
 V.money_overview = () => {
   const p = currentPeriod();
@@ -933,14 +945,17 @@ V.money_tx = () => {
   tx.sort((a, b) => a.date < b.date ? 1 : -1);
   const corr = D.savingsMoves.filter(m => isCorr(m) && (UI.txFilter !== 'period' || !p || (m.date >= p.start && m.date <= p.end)));
   const corrTx = corr.map(m => ({corr: m, date: m.date}));
-  const all = [...tx, ...corrTx].sort((a, b) => a.date < b.date ? 1 : -1);
+  const incs = UI.txFilter === 'savings' ? D.income.filter(i => i.dest === 'savings') : D.income.filter(i => UI.txFilter !== 'period' || !p || (i.date >= p.start && i.date <= p.end));
+  const incTx = incs.map(i => ({inc: i, date: i.date}));
+  const all = [...tx, ...corrTx, ...incTx].sort((a, b) => a.date < b.date ? 1 : -1);
   const sg = v => (v > 0 ? '+' : '') + eur(v);
   const cRow = m => `<div class="txr corr" onclick="A.savCorrect('${m.id}')"><i class="dot" style="background:var(--muted)"></i><span class="txd">${fd(m.date)}</span><span class="txa ${m.amount < 0 ? 'bad' : 'good'}">${sg(m.amount)}</span><span class="txt"><span>Manual correction</span> <span class="muted">· savings → ${eur(m.to ?? savingsBalance(m.date))}${m.note ? ' · ' + esc(m.note) : ''}</span></span></div>`;
-  const rows = all.map(t => t.corr ? cRow(t.corr) : `<div class="txr" onclick="A.expense('${t.id}')"><i class="dot" style="background:${PAL[t.bucket] || 'var(--muted)'}"></i><span class="txd">${fd(t.date)}</span><span class="txa">${eur(t.amount)}</span><span class="txt"><span>${esc(t.category)}</span>${t.note ? ` <span class="muted">· ${esc(t.note)}</span>` : ''}</span>${t.source === 'savings' ? '<span class="txs" title="Paid from savings">↗</span>' : ''}</div>`).join('');
+  const iRow = i => `<div class="txr inc" onclick="A.income('${i.id}')"><i class="dot" style="background:var(--good)"></i><span class="txd">${fd(i.date)}</span><span class="txa good">+${eur(i.amount)}</span><span class="txt"><span class="good">→ ${i.dest === 'savings' ? 'savings' : i.to === 'split' ? 'split' : i.to}</span> <span>${esc(i.note || 'Income')}</span></span></div>`;
+  const rows = all.map(t => t.inc ? iRow(t.inc) : t.corr ? cRow(t.corr) : `<div class="txr" onclick="A.expense('${t.id}')"><i class="dot" style="background:${PAL[t.bucket] || 'var(--muted)'}"></i><span class="txd">${fd(t.date)}</span><span class="txa">${eur(t.amount)}</span><span class="txt"><span>${esc(t.category)}</span>${t.note ? ` <span class="muted">· ${esc(t.note)}</span>` : ''}</span>${t.source === 'savings' ? '<span class="txs" title="Paid from savings">↗</span>' : ''}</div>`).join('');
   const empty = !all.length;
-  return `<div class="card"><h3 class="txhead"><span class="seg">${[['period', 'This period'], ['all', 'All'], ['savings', 'From savings']].map(([k, l]) => `<button class="${UI.txFilter === k ? 'on' : ''}" onclick="UI.txFilter='${k}';render()">${l}</button>`).join('')}</span><span class="act muted">${tx.length} · ${eur(sum(tx, t => t.amount))}${corr.length ? ` · ${corr.length} correction${corr.length > 1 ? 's' : ''}` : ''}</span></h3>
+  return `<div class="card"><h3 class="txhead"><span class="seg">${[['period', 'This period'], ['all', 'All'], ['savings', 'From savings']].map(([k, l]) => `<button class="${UI.txFilter === k ? 'on' : ''}" onclick="UI.txFilter='${k}';render()">${l}</button>`).join('')}</span><span class="act muted">${tx.length} · ${eur(sum(tx, t => t.amount))}${incs.length ? ` · <span class="good">+${eur(sum(incs, i => i.amount))} income</span>` : ''}${corr.length ? ` · ${corr.length} correction${corr.length > 1 ? 's' : ''}` : ''}</span></h3>
   <div class="only-mob">${legend([[PAL.needs, 'needs'], [PAL.wants, 'wants'], [PAL.savings, 'savings']])}<div class="small faint" style="margin:4px 0 8px"><span class="warn">↗</span> = paid from savings · tap a row to edit</div>${!empty ? `<div class="txlist">${rows}</div>` : '<div class="empty">No transactions</div>'}</div>
-  <div class="only-desk">${!empty ? `<table><tr><th>Date</th><th>Category</th><th>Note</th><th>Bucket</th><th>Paid from</th><th class="n">Amount</th><th></th></tr>${all.map(t => t.corr ? `<tr class="corr"><td class="muted">${fdl(t.date)}</td><td>Manual correction</td><td class="muted">savings balance → ${eur(t.corr.to ?? savingsBalance(t.date))}${t.corr.note ? ' · ' + esc(t.corr.note) : ''}</td><td><span class="tag">—</span></td><td class="muted">not spending</td><td class="n ${t.corr.amount < 0 ? 'bad' : 'good'}">${sg(t.corr.amount)}</td><td class="n"><button class="btn sm ghost" onclick="A.savCorrect('${t.corr.id}')">edit</button></td></tr>` : `<tr><td class="muted">${fdl(t.date)}</td><td>${esc(t.category)}</td><td class="muted">${esc(t.note || '')}</td><td><span class="tag ${t.bucket}">${t.bucket}</span></td><td class="${t.source === 'savings' ? 'warn' : 'muted'}">${t.source === 'savings' ? 'savings' : 'salary'}</td><td class="n">${eur(t.amount)}</td><td class="n"><button class="btn sm ghost" onclick="A.expense('${t.id}')">edit</button></td></tr>`).join('')}</table>` : '<div class="empty">No transactions</div>'}</div></div>`;
+  <div class="only-desk">${!empty ? `<table><tr><th>Date</th><th>Category</th><th>Note</th><th>Bucket</th><th>Paid from</th><th class="n">Amount</th><th></th></tr>${all.map(t => t.inc ? `<tr><td class="muted">${fdl(t.date)}</td><td class="good">Income</td><td>${esc(t.inc.note || '')}</td><td><span class="tag">${t.inc.dest === 'savings' ? 'savings' : t.inc.to === 'split' ? 'split' : t.inc.to}</span></td><td class="muted">${t.inc.dest === 'savings' ? 'into savings' : 'into this month'}</td><td class="n good">+${eur(t.inc.amount)}</td><td class="n"><button class="btn sm ghost" onclick="A.income('${t.inc.id}')">edit</button></td></tr>` : t.corr ? `<tr class="corr"><td class="muted">${fdl(t.date)}</td><td>Manual correction</td><td class="muted">savings balance → ${eur(t.corr.to ?? savingsBalance(t.date))}${t.corr.note ? ' · ' + esc(t.corr.note) : ''}</td><td><span class="tag">—</span></td><td class="muted">not spending</td><td class="n ${t.corr.amount < 0 ? 'bad' : 'good'}">${sg(t.corr.amount)}</td><td class="n"><button class="btn sm ghost" onclick="A.savCorrect('${t.corr.id}')">edit</button></td></tr>` : `<tr><td class="muted">${fdl(t.date)}</td><td>${esc(t.category)}</td><td class="muted">${esc(t.note || '')}</td><td><span class="tag ${t.bucket}">${t.bucket}</span></td><td class="${t.source === 'savings' ? 'warn' : 'muted'}">${t.source === 'savings' ? 'savings' : 'salary'}</td><td class="n">${eur(t.amount)}</td><td class="n"><button class="btn sm ghost" onclick="A.expense('${t.id}')">edit</button></td></tr>`).join('')}</table>` : '<div class="empty">No transactions</div>'}</div></div>`;
 };
 V.money_bills = () => {
   const from = TODAY, to = addDays(TODAY, 45), occ = billOccurrences(addDays(TODAY.slice(0, 8) + '01', 0), to);
@@ -1128,8 +1143,8 @@ V.records = () => {
   else {
     const ts = D.tasks.filter(t => !q || JSON.stringify(t).toLowerCase().includes(q));
     const open = ts.filter(t => !t.done).sort((a, b) => (a.due || '9') < (b.due || '9') ? -1 : 1), done = ts.filter(t => t.done).sort((a, b) => (a.doneAt || '') < (b.doneAt || '') ? 1 : -1);
-    const row = t => `<div class="li wrow"><input type="checkbox" ${t.done ? 'checked' : ''} onchange="A.toggleTask('${t.id}')"><span class="t ${t.done ? 'faint' : ''}" style="${t.done ? 'text-decoration:line-through' : ''}">${esc(t.title)}${t.notes ? ` <span class="muted small">— ${esc(t.notes)}</span>` : ''}</span>
-      ${t.repeat ? `<span class="tag" title="${esc(repeatText(t))}">↻ ${esc(repeatText(t).replace('every ', ''))}</span>` : ''}${t.due ? `<span class="small ${!t.done && t.due < TODAY ? 'bad' : 'muted'}">${fdl(t.due)}${t.due.slice(0, 4) !== TODAY.slice(0, 4) ? ' ' + t.due.slice(0, 4) : ''}</span>` : '<span class="tag">note</span>'}<button class="btn sm ghost" onclick="A.task('${t.id}')">edit</button></div>`;
+    const row = t => `<div class="li wrow"><input type="checkbox" ${t.done ? 'checked' : ''} onchange="A.toggleTask('${t.id}')"><span class="t ${t.done ? 'faint' : ''}" style="cursor:pointer;white-space:normal;${t.done ? 'text-decoration:line-through' : ''}" onclick="A.task('${t.id}')" title="Tap to edit">${esc(t.title)}${t.notes ? ` <span class="muted small">— ${esc(t.notes)}</span>` : ''}</span>
+      ${t.repeat ? `<span class="tag" title="${esc(repeatText(t))}">↻ ${esc(repeatText(t).replace('every ', ''))}</span>` : ''}${t.due ? `<span class="small ${!t.done && t.due < TODAY ? 'bad' : 'muted'}">${fdl(t.due)}${t.due.slice(0, 4) !== TODAY.slice(0, 4) ? ' ' + t.due.slice(0, 4) : ''}</span>` : '<span class="tag">note</span>'}<button class="btn sm ghost" onclick="A.task('${t.id}')" title="Edit">✎</button></div>`;
     const rec = open.filter(t => t.repeat || t.remindBefore), once = open.filter(t => !t.repeat && !t.remindBefore);
     body = `<div class="grid g21"><div class="grid" style="align-content:start"><div class="card"><h3>Open · ${once.length}</h3><div class="list">${once.map(row).join('') || '<div class="empty">All clear</div>'}</div></div>
       <div class="card"><h3>Recurring & renewals · ${rec.length} <span class="act"><button class="btn sm" onclick="A.task(null,'',{repeat:{n:1,unit:'year'},remindBefore:30})">+ Renewal</button></span></h3><div class="list">${rec.map(row).join('') || '<div class="empty small">Insurance, vignette, ID card, check-ups… add them once and get warned ahead every time.</div>'}</div></div></div>
@@ -1371,7 +1386,7 @@ V.calendar = () => {
       <div class="mt"><div class="legend">${[ ['var(--accent)', '◆', 'workout'], ['var(--muted)', '◇', 'planned'], ['var(--bad)', '⚑', 'holiday'], ['var(--extra)', '✧', 'name day'], [PAL.wants, '❖', 'gift'], ['var(--warn)', '▲', 'bill due'], ['var(--muted)', '✓', 'bill paid'], ['var(--extra)', '✦', 'birthday'], ['var(--text)', '□', 'task'], ['var(--wants)', '◎', 'goal deadline'], ['var(--good)', '★', 'goal achieved'], ['var(--good)', '+€', 'income'], ['var(--muted)', '−€', 'spent'], ['var(--savings)', '↗', 'to savings']].map(([c, g, l]) => `<span><b style="color:${c};font-weight:400">${g}</b>${l}</span>`).join('')}</div></div></div>
     <div class="card" style="position:sticky;top:0"><h3>${fdl(UI.calSel)} ${UI.calSel.slice(0, 4)}</h3>
       ${feastsOn(UI.calSel).length ? `<div class="small muted" style="margin:-4px 0 8px;line-height:1.6"><span style="color:var(--extra)">✧</span> ${feastsOn(UI.calSel).map(f => `<b style="font-weight:500;color:var(--text)">${esc(f.feast)}</b> — ${esc(f.names.join(', '))}`).join('<br>')}</div>` : ''}
-      ${sel.length ? sel.map(e => `<div class="li" style="align-items:flex-start"><span style="color:${e.c};width:14px">${e.g}</span><div style="flex:1;min-width:0"><div>${esc(e.t)}</div>${e.s ? `<div class="small muted">${esc(e.s)}</div>` : ''}</div></div>`).join('') : '<div class="empty">Nothing on this day</div>'}
+      ${sel.length ? sel.map(e => `<div class="li" style="align-items:flex-start${e.edit ? ';cursor:pointer' : ''}" ${e.edit ? `onclick="${e.edit}" title="Tap to edit"` : ''}><span style="color:${e.c};width:14px">${e.g}</span><div style="flex:1;min-width:0"><div>${esc(e.t)}</div>${e.s ? `<div class="small muted">${esc(e.s)}</div>` : ''}</div>${e.edit ? '<span class="faint small">✎</span>' : ''}</div>`).join('') : '<div class="empty">Nothing on this day</div>'}
       <div class="row wrap mt"><button class="btn sm" onclick="A.expense(null,'${UI.calSel}')">+ Expense</button><button class="btn sm" onclick="A.task(null,'${UI.calSel}')">+ Task</button></div></div></div>`;
 };
 
@@ -1459,8 +1474,12 @@ const HELP = [
   ['Monthly review', `<p>At the start of each month, <b>Today</b> shows a card: <i>Your October review is ready</i> (you also get a notification on the 1st). The review shows what you spent and saved compared with the month before, your top spending categories, new strength records, workouts and sets per muscle, weight and waist change, goals achieved and check-ins — and what's coming next month (bills, birthdays, deadlines). Open any month from Calendar → <b>Month review</b> and use ‹ › to go back in time.</p>`],
   ['Recurring tasks & renewals', `<p>For things that come back — car insurance, vignette, ID card or passport expiry, annual check-ups, filter changes — add a task with a <b>repeat</b> (every N days, weeks, months or years) and choose how early to be <b>reminded</b> (up to 3 months before). They're listed under Records → Tasks → <i>Recurring & renewals</i>. Ticking one off logs it and moves it to the next date automatically. Quick add: <code>task car insurance every year 03.12</code>.</p>`],
   ['Calendar, records & reminders', `<p>The <b>Calendar</b> shows everything per day: ◆ workouts, − spending, + income, ▲ bills due, ✓ bills paid, ✦ birthdays, ✧ name days, ⚑ holidays, ◇ planned workouts, □ tasks, ◎ goal deadlines, ★ goals achieved, finished books/games/films. Tap a day for the details.</p>
-    <p><b>Records</b> holds people (birthday, name day, keep in touch, gift ideas), tasks & notes, and the media log.</p>
+    <p>Tap any task — in Records, in Today's Upcoming or on a calendar day — to edit it.</p><p><b>Records</b> holds people (birthday, name day, keep in touch, gift ideas), tasks & notes, and the media log.</p>
     <p><b>Reminders</b>: birthdays and bills at least 7 days ahead (change in Settings), the day before and on the day; a weekly summary every Monday. Turn on notifications in Settings. On Android and desktop they also arrive while the app is closed (checked a few times a day); on iPhone they show when you open the app.</p>`],
+  ['Extra income', `<p>Money that comes in outside your paycheck — a side job, a money gift, a refund, something you sold: <b>Money → + Income</b> (next to + Paycheck).</p>
+    <ul><li>Type the amount and a short description, then choose where it goes: <b>This month's pool</b> or <b>Straight to savings</b>.</li>
+    <li>For the pool, choose <b>Wants</b>, <b>Needs</b> or <b>Split</b> like your salary. It's added to the pay period of that date, so <i>safe to spend</i> and <i>Wants left</i> go up right away. With Split, the savings share goes to savings.</li>
+    <li>Income shows in green in <b>Transactions</b> and on the calendar. It isn't spending and isn't counted in your spending totals. Tap it to change or delete it.</li></ul>`],
   ['Correcting your savings balance', `<p>If the savings balance in Oracle doesn't match your real savings (for example after a paycheck put in the wrong amount), go to <b>Money → Savings & goals</b> and press <b>✎ Correct</b> on the balance (or tap the balance).</p>
     <ul><li>Type what your savings really are. Oracle shows the difference and saves it as a <b>manual correction</b>.</li>
     <li>The correction appears in <b>Money → Transactions</b> (in grey, marked “Manual correction”) and in the savings history, but it is <b>not spending</b>: Needs, Wants, safe to spend and the savings budget are untouched, and it doesn't count as money saved in your monthly review.</li>
@@ -1587,6 +1606,7 @@ async function tourEnd() {
 
 // ---------------- what's new (shown once on each device after an update)
 const CHANGELOG = [
+  {v: '2.8.0', items: ['+ Income: log money from other sources — into this month\'s Wants / Needs / split, or straight to savings', 'Income shows in Transactions and the calendar, never as spending', 'Tasks can be edited from anywhere: tap one in Records, Today or the calendar']},
   {v: '2.7.0', items: ['Wishlist: tick an item as “Received as a gift” — no expense, budgets untouched', 'Records → Gifts: a Received list and “+ Received gift” for gifts that weren\'t on the wishlist', 'People cards show what each person gave you']},
   {v: '2.6.1', items: ['Correct your savings balance by hand: Money → Savings & goals → ✎ Correct', 'Corrections show in Transactions as “Manual correction” and never touch Needs, Wants or the savings budget']},
   {v: '2.6.0', items: ['Gifts: a new Wants category, plus Records → Gifts to plan gifts for birthdays, name days, Christmas and other events', 'A planned gift\'s budget is set aside from Wants in its pay period — safe to spend already counts it', '“Bought” turns a plan into a Gifts expense; see what you spend per person', 'Reminders and calendar entries for planned gifts; Today shows gifts coming up', 'Redesigned lock screen: bigger keys spread across the screen, faster response, live wait countdown']},
@@ -1618,6 +1638,37 @@ const val = id => $('#' + id)?.value?.trim() ?? '';
 const catOptions = sel => D.settings.categories.map(c => `<option ${c.name === sel ? 'selected' : ''}>${esc(c.name)}</option>`).join('');
 
 const A = {
+  income(id) {
+    const x = id ? D.income.find(i => i.id === id) : {dest: 'pool', to: 'wants', date: TODAY}, sp = D.settings.split;
+    const seg = (grp, k, l, on) => `<button class="${on ? 'on' : ''}" data-v="${k}" onclick="this.parentNode.querySelectorAll('button').forEach(b=>b.classList.remove('on'));this.classList.add('on');A.incomePrev()">${l}</button>`;
+    modal(`<h2>${id ? 'Edit' : 'Add'} income</h2><div class="small muted" style="margin-bottom:10px">Money that came in outside your paycheck — a side job, money gift, refund, something you sold.</div>
+      <div class="formgrid"><label class="f">Amount (€)<input type="number" inputmode="decimal" step="0.01" id="in_a" value="${x.amount || ''}" oninput="A.incomePrev()"></label><label class="f">Date<input type="date" id="in_d" value="${x.date}" oninput="A.incomePrev()"></label>
+      <label class="f full">Short description<input id="in_n" value="${esc(x.note || '')}" placeholder="sold old monitor, freelance, birthday money…"></label>
+      <div class="full"><div class="small muted" style="margin-bottom:4px">GOES INTO</div><span class="seg" id="in_dest">${seg('d', 'pool', "This month's pool", x.dest !== 'savings')}${seg('d', 'savings', 'Straight to savings', x.dest === 'savings')}</span></div>
+      <div class="full" id="in_tow"><div class="small muted" style="margin-bottom:4px">ADD IT TO</div><span class="seg" id="in_to">${seg('t', 'wants', 'Wants', (x.to || 'wants') === 'wants')}${seg('t', 'needs', 'Needs', x.to === 'needs')}${seg('t', 'split', `Split ${sp.needs}/${sp.wants}/${sp.savings}`, x.to === 'split')}</span></div></div>
+      <div class="mt small" id="in_pv"></div>
+      <div class="row mt">${id ? `<button class="btn ghost danger" onclick="A.incomeDel('${id}')">Delete</button>` : ''}<span class="sp"></span><button class="btn ghost" onclick="closeModal()">Cancel</button><button class="btn pri" onclick="A.incomeSave('${id || ''}')">Save</button></div>`);
+    A.incomePrev(); if (!id) setTimeout(() => $('#in_a')?.focus(), 50);
+  },
+  incomeRead() { return {amount: r2(num(val('in_a'))), date: val('in_d') || TODAY, note: val('in_n'), dest: $('#in_dest button.on').dataset.v, to: $('#in_to button.on').dataset.v}; },
+  incomePrev() {
+    const x = A.incomeRead(), pool = x.dest === 'pool'; $('#in_tow').style.display = pool ? '' : 'none';
+    const p = currentPeriod(x.date), pr = incomeParts(x, p && p.pc), el = $('#in_pv'); if (!(x.amount > 0)) return el.innerHTML = '';
+    el.innerHTML = !pool ? `<span class="good">+${eur(x.amount)}</span> to savings → balance ${eur(savingsBalance() + x.amount)}`
+      : !p ? '<span class="warn">No pay period yet on this date — add a paycheck first, or put it straight into savings.</span>'
+      : `Adds to the pay period ${fd(p.start)} – ${fd(p.end)}: ${['needs', 'wants', 'savings'].filter(k => pr[k]).map(k => `<b>+${eur(pr[k])}</b> ${k}`).join(' · ')}`;
+  },
+  incomeSave(id) {
+    const x = A.incomeRead(); if (!(x.amount > 0)) return toast('Enter the amount');
+    const p = x.dest === 'pool' && currentPeriod(x.date); if (x.dest === 'pool' && !p) return toast('No pay period yet — add a paycheck first, or choose savings');
+    const old = id && D.income.find(i => i.id === id); if (old && old.moveId) D.savingsMoves = D.savingsMoves.filter(m => m.id !== old.moveId);
+    const iid = id || uid(), sv = incomeParts(x, p && p.pc).savings;
+    x.moveId = sv > 0 ? uid() : null;
+    if (sv > 0) D.savingsMoves.push({id: x.moveId, date: x.date, amount: sv, kind: 'deposit', note: 'Income' + (x.note ? ': ' + x.note : ''), incomeId: iid});
+    if (old) Object.assign(old, x); else D.income.push({id: iid, ...x});
+    closeModal(); commit(); toast(`+${eur(x.amount)} ${x.note ? '· ' + x.note + ' ' : ''}→ ${incomeDest(x)}`);
+  },
+  incomeDel(id) { const x = D.income.find(i => i.id === id); if (!confirm(`Delete this income (${eur(x.amount)})?`)) return; if (x.moveId) D.savingsMoves = D.savingsMoves.filter(m => m.id !== x.moveId); A.del('income', id); closeModal(); },
   paycheck(prefill) {
     const s = D.settings.split;
     modal(`<h2>Paycheck</h2><div class="formgrid"><label class="f">Amount received (€)<input type="number" step="0.01" id="pc_amt" value="${prefill || ''}" oninput="A.pcPreview()"></label><label class="f">Date<input type="date" id="pc_date" value="${TODAY}" oninput="A.pcPreview()"></label>
